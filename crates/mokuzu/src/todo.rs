@@ -35,8 +35,9 @@ them, follow up, check back, or do something later, or when you promise later wo
 it with the todo tool in that same response, with a `due` time when one is known. Write each todo \
 so it makes sense alone, with the details needed to act on it. While working one, replace its \
 content with what is left and what you found; mark it done once finished or no longer wanted. \
-Every 30 minutes you wake on your own to work through open todos and tell the user only what \
-needs them. Never say you noted something unless the todo call succeeded.";
+Every 30 minutes, and when a todo's due time comes, you wake on your own to work through open \
+todos and tell the user only what needs them; a due time is the reminder, so a todo with one \
+needs no scheduled job. Never say you noted something unless the todo call succeeded.";
 
 /// A change the todo tool asked for, already validated against the current todos.
 #[derive(Debug, PartialEq, Eq)]
@@ -204,12 +205,19 @@ pub fn heartbeat_prompt(todos: &[Todo], now: DateTime<Tz>) -> String {
         "[Heartbeat at {now}. You woke on your own to check the todos written in this \
          conversation; nobody is watching live and actions that need approval will be denied.\n\
          Work each one you can make progress on with your tools now. Update its content with what \
-         you found and what is left, or mark it done. Then message the user only if something is \
+         you found and what is left, or mark it done. A todo that is only a reminder is done once \
+         you remind the user, so mark it done rather than reminding again next time. Then \
+         message the user only if something is \
          due, finished, or needs them, in their language (from saved facts, else the todos'), not \
          this note's. Otherwise reply exactly {SILENT} and nothing else; it is not posted.]\n\n{}",
         list.join("\n"),
         now = now.format("%Y-%m-%d %H:%M"),
     )
+}
+
+/// Whether `todo`'s due time falls after `after`, up to and including `now`.
+pub fn came_due(todo: &Todo, after: i64, now: i64) -> bool {
+    todo.due.is_some_and(|due| after < due && due <= now)
 }
 
 /// Whether a heartbeat's last reply means "nothing to say".
@@ -387,6 +395,9 @@ mod tests {
         assert!(prompt.contains("#1 [due 2026-10-28 08:59] send the report (due now)"));
         assert!(prompt.contains("#2 watch the PR"));
         assert!(is_silent(" NO_REPLY\n") && !is_silent("NO_REPLY, but the PR merged"));
+        let due = todo(1, "x", Some(100));
+        assert!(came_due(&due, 99, 100) && !came_due(&due, 100, 130) && !came_due(&due, 60, 99));
+        assert!(!came_due(&todo(2, "x", None), 0, 200));
     }
 
     /// Records what reaches the user.

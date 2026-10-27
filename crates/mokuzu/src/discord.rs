@@ -130,23 +130,31 @@ impl Drop for Running {
     }
 }
 
-/// Starts every due job, and every `todo::HEARTBEAT` a check of open todos, forever. A job missed
-/// while mokuzu was down runs once on startup; the first heartbeat waits a full interval.
+/// Starts every due job, and every `todo::HEARTBEAT` a check of open todos, forever. A todo
+/// coming due also starts its conversation's check on the next tick, so reminders are on time. A
+/// job missed while mokuzu was down runs once on startup; the first heartbeat waits a full
+/// interval, and todos that came due while down wait for it.
 async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     let mut tick = tokio::time::interval(CRON_TICK);
     let mut heartbeat = tokio::time::interval_at(
         tokio::time::Instant::now() + todo::HEARTBEAT,
         todo::HEARTBEAT,
     );
+    let mut checked = chrono::Utc::now().timestamp();
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
                     tracing::warn!("scheduler tick failed: {err:#}");
                 }
+                let now = chrono::Utc::now().timestamp();
+                if let Err(err) = start_heartbeats(&config, &db, &mcp, &http, Some((checked, now))).await {
+                    tracing::warn!("due todo check failed: {err:#}");
+                }
+                checked = now;
             }
             _ = heartbeat.tick() => {
-                if let Err(err) = start_heartbeats(&config, &db, &mcp, &http).await {
+                if let Err(err) = start_heartbeats(&config, &db, &mcp, &http, None).await {
                     tracing::warn!("heartbeat failed: {err:#}");
                 }
             }
@@ -154,13 +162,17 @@ async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     }
 }
 
-/// Starts one heartbeat per person and Discord conversation with open todos. Nobody with no
-/// todos means no model call.
+/// Starts one heartbeat per person and Discord conversation with open todos; with `came_due`
+/// `(after, now)`, only for those with a todo whose due time falls in it. Nobody with no todos
+/// means no model call.
+// ponytail: a todo coming due while its conversation's last check is still running waits for the
+// next 30-minute heartbeat; queue it if reminders get missed that way.
 async fn start_heartbeats(
     config: &Config,
     db: &Db,
     mcp: &Arc<Mcp>,
     http: &Arc<Http>,
+    came_due: Option<(i64, i64)>,
 ) -> Result<()> {
     let mut groups: HashMap<(Option<u64>, String), Vec<Todo>> = HashMap::new();
     for todo in db.all_todos().await? {
@@ -173,6 +185,11 @@ async fn start_heartbeats(
         }
     }
     for ((user, target), todos) in groups {
+        if let Some((after, now)) = came_due
+            && !todos.iter().any(|todo| todo::came_due(todo, after, now))
+        {
+            continue;
+        }
         let user_key = user.map_or_else(|| "terminal".to_owned(), |u| u.to_string());
         let key = format!("heartbeat:{target}:{user_key}");
         let Some(running) = Running::start(key.clone()) else {
