@@ -23,9 +23,10 @@ use tokio::sync::mpsc;
 use crate::agent::{self, Agent, Io};
 use crate::config::{Config, DiscordSection};
 use crate::cron;
-use crate::db::{Db, Job};
+use crate::db::{Db, Job, Todo};
 use crate::document;
 use crate::mcp::Mcp;
+use crate::todo::{self, Quiet};
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long a turn waits for another message before starting, so a burst is answered once.
@@ -103,16 +104,20 @@ pub async fn serve(config: Config) -> Result<()> {
     client.start().await.context("Discord connection failed")
 }
 
-/// Ids of jobs with a run in progress; a job that comes due again while running is skipped.
-static RUNNING: Mutex<Option<HashSet<i64>>> = Mutex::new(None);
+/// Jobs (`job:<id>`) and heartbeats (`heartbeat:<target>:<user>`) with a run in progress; one
+/// that comes due again while running is skipped.
+static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// Marks job `id` running until dropped; `None` if it already is.
-struct Running(i64);
+/// Marks `key` running until dropped; `None` if it already is.
+struct Running(String);
 
 impl Running {
-    fn start(id: i64) -> Option<Self> {
+    fn start(key: String) -> Option<Self> {
         let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
-        running.get_or_insert_default().insert(id).then(|| Self(id))
+        running
+            .get_or_insert_default()
+            .insert(key.clone())
+            .then(|| Self(key))
     }
 }
 
@@ -125,15 +130,137 @@ impl Drop for Running {
     }
 }
 
-/// Starts every due job, forever. A job missed while mokuzu was down runs once on startup.
+/// Starts every due job, and every `todo::HEARTBEAT` a check of open todos, forever. A job missed
+/// while mokuzu was down runs once on startup; the first heartbeat waits a full interval.
 async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     let mut tick = tokio::time::interval(CRON_TICK);
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + todo::HEARTBEAT,
+        todo::HEARTBEAT,
+    );
     loop {
-        tick.tick().await;
-        if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
-            tracing::warn!("scheduler tick failed: {err:#}");
+        tokio::select! {
+            _ = tick.tick() => {
+                if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
+                    tracing::warn!("scheduler tick failed: {err:#}");
+                }
+            }
+            _ = heartbeat.tick() => {
+                if let Err(err) = start_heartbeats(&config, &db, &mcp, &http).await {
+                    tracing::warn!("heartbeat failed: {err:#}");
+                }
+            }
         }
     }
+}
+
+/// Starts one heartbeat per person and Discord conversation with open todos. Nobody with no
+/// todos means no model call.
+async fn start_heartbeats(
+    config: &Config,
+    db: &Db,
+    mcp: &Arc<Mcp>,
+    http: &Arc<Http>,
+) -> Result<()> {
+    let mut groups: HashMap<(Option<u64>, String), Vec<Todo>> = HashMap::new();
+    for todo in db.all_todos().await? {
+        // Terminal todos have nowhere to post; they wait for the user's next terminal session.
+        if todo.target.starts_with("discord:") {
+            groups
+                .entry((todo.user, todo.target.clone()))
+                .or_default()
+                .push(todo);
+        }
+    }
+    for ((user, target), todos) in groups {
+        let user_key = user.map_or_else(|| "terminal".to_owned(), |u| u.to_string());
+        let key = format!("heartbeat:{target}:{user_key}");
+        let Some(running) = Running::start(key.clone()) else {
+            tracing::info!(key, "skipping a heartbeat: the last one has not finished");
+            continue;
+        };
+        let (config, db, mcp, http) = (
+            config.clone(),
+            db.clone(),
+            Arc::clone(mcp),
+            Arc::clone(http),
+        );
+        tokio::spawn(async move {
+            run_heartbeat(config, db, mcp, http, key, user, target, todos).await;
+            drop(running);
+        });
+    }
+    Ok(())
+}
+
+/// Works through `user`'s `todos` written in the conversation `target`, in a fresh conversation
+/// `key`, and posts there only if the agent has something to say.
+#[tracing::instrument(skip_all, fields(key))]
+#[allow(clippy::too_many_arguments)]
+async fn run_heartbeat(
+    config: Config,
+    db: Db,
+    mcp: Arc<Mcp>,
+    http: Arc<Http>,
+    key: String,
+    user: Option<u64>,
+    target: String,
+    todos: Vec<Todo>,
+) {
+    let Some(mut io) = unattended_io(http, &target) else {
+        return;
+    };
+    let now = chrono::Utc::now().with_timezone(&config.timezone);
+    let mut quiet = Quiet::new(&mut io);
+    let run = async {
+        let mut agent = Agent::new(config, db, mcp, &key).await?;
+        agent.reset().await?;
+        agent.posts_to(&target);
+        agent
+            .run_turn(
+                &todo::heartbeat_prompt(&todos, now),
+                Vec::new(),
+                user,
+                &mut quiet,
+            )
+            .await?;
+        quiet.finish().await
+    };
+    match run.await {
+        Ok(true) => {}
+        Ok(false) => tracing::debug!("heartbeat had nothing to say"),
+        Err(err) => {
+            tracing::warn!("heartbeat failed: {err:#}");
+            if let Err(err) = io.say(&format!("error: todo check failed: {err:#}")).await {
+                tracing::error!("failed to report heartbeat failure: {err:#}");
+            }
+        }
+    }
+}
+
+/// An `Io` posting to the Discord conversation `target` with nobody there to approve anything:
+/// with the inbox's sender gone, `confirm` sees it closed and denies. Auto approval still
+/// reviews and runs.
+fn unattended_io(http: Arc<Http>, target: &str) -> Option<DiscordIo> {
+    let Some(channel) = target
+        .strip_prefix("discord:")
+        .and_then(|id| id.parse().ok())
+        .map(ChannelId::new)
+    else {
+        tracing::warn!(target, "not a Discord channel");
+        return None;
+    };
+    let (_, inbox) = mpsc::unbounded_channel();
+    Some(DiscordIo {
+        http,
+        web: reqwest::Client::new(),
+        channel,
+        inbox,
+        approval: None,
+        status: None,
+        board: None,
+        overheard: Vec::new(),
+    })
 }
 
 /// Moves each due job to its next run (or deletes a one-off) before starting it, so a slow run
@@ -156,7 +283,7 @@ async fn start_due_jobs(config: &Config, db: &Db, mcp: &Arc<Mcp>, http: &Arc<Htt
                 db.remove_job(job.id).await?;
             }
         }
-        let Some(running) = Running::start(job.id) else {
+        let Some(running) = Running::start(format!("job:{}", job.id)) else {
             tracing::info!(
                 job = job.id,
                 "skipping a run: the last one has not finished"
@@ -180,33 +307,15 @@ async fn start_due_jobs(config: &Config, db: &Db, mcp: &Arc<Mcp>, http: &Arc<Htt
 /// Runs one job in its own fresh conversation and posts the result where the job was made.
 #[tracing::instrument(skip_all, fields(job = job.id))]
 async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Job) {
-    let Some(channel) = job
-        .target
-        .strip_prefix("discord:")
-        .and_then(|id| id.parse().ok())
-        .map(ChannelId::new)
-    else {
-        tracing::warn!(target = job.target, "job target is not a Discord channel");
+    let Some(mut io) = unattended_io(http, &job.target) else {
         return;
-    };
-    // No one can answer an approval here: with the sender gone, `confirm` sees a closed inbox
-    // and denies. Auto approval still reviews and runs.
-    let (_, inbox) = mpsc::unbounded_channel();
-    let mut io = DiscordIo {
-        http,
-        web: reqwest::Client::new(),
-        channel,
-        inbox,
-        approval: None,
-        status: None,
-        board: None,
-        overheard: Vec::new(),
     };
     let run = async {
         io.note(&format!("⏰ job #{} {}", job.id, job.name)).await?;
         let mut agent = Agent::new(config, db, mcp, &format!("cron:{}", job.id)).await?;
         // The last run's transcript stays on disk until the next one starts.
         agent.reset().await?;
+        agent.posts_to(&job.target);
         agent
             .run_turn(&cron::prompt(&job), Vec::new(), job.user, &mut io)
             .await
@@ -1009,11 +1118,11 @@ mod tests {
 
     #[test]
     fn a_running_job_cannot_start_again_until_it_ends() {
-        let first = Running::start(-7).expect("first run");
-        assert!(Running::start(-7).is_none());
-        assert!(Running::start(-8).is_some());
+        let first = Running::start("test:7".to_owned()).expect("first run");
+        assert!(Running::start("test:7".to_owned()).is_none());
+        assert!(Running::start("test:8".to_owned()).is_some());
         drop(first);
-        assert!(Running::start(-7).is_some());
+        assert!(Running::start("test:7".to_owned()).is_some());
     }
 
     #[test]

@@ -32,6 +32,7 @@ use crate::search::WebSearch;
 use crate::settings;
 use crate::skill;
 use crate::swarm;
+use crate::todo;
 
 /// How long a new model gets to answer its test request before a switch is refused.
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -282,14 +283,17 @@ async fn system_prompt(db: &Db, key: &str, config: &Config, user: Option<u64>) -
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let memories = db.memories(user).await.context("failed to load memory")?;
     let skills = db.skills(user).await.context("failed to load skills")?;
+    let todos = db.todos(user).await.context("failed to load todos")?;
     let tools = if config.search.is_some() {
         format!("{}\n\n{}\n\n", search::GUIDANCE, swarm::GUIDANCE)
     } else {
         String::new()
     };
     Ok(format!(
-        "{IDENTITY}\n\n{tools}{guidance}\n\n{skills}\n\nOS: {os}. Working directory: {cwd}.\n\n{hint}\n\n{saved}",
+        "{IDENTITY}\n\n{tools}{guidance}\n\n{todo_guidance}\n\n{skills}\n\nOS: {os}. Working directory: {cwd}.\n\n{hint}\n\n{saved}\n\n{todos}",
         guidance = memory::GUIDANCE,
+        todo_guidance = todo::GUIDANCE,
+        todos = todo::snapshot(&todos, config.timezone),
         skills = skill::section(&skills),
         hint = platform_hint(key),
         saved = memory::snapshot(&memories),
@@ -299,7 +303,7 @@ async fn system_prompt(db: &Db, key: &str, config: &Config, user: Option<u64>) -
 }
 
 /// Formatting guidance for where the conversation lives, keyed like `Agent::new`.
-/// Scheduled jobs (`cron:<id>`) post to Discord too.
+/// Scheduled jobs (`cron:<id>`) and heartbeats post to Discord too.
 fn platform_hint(key: &str) -> &'static str {
     if chats(key) {
         "You are chatting over Discord. Markdown renders; tables do not, use bullets. Keep replies short. \
@@ -315,9 +319,10 @@ fn platform_hint(key: &str) -> &'static str {
     }
 }
 
-/// Whether the conversation `key` lives in Discord. Scheduled jobs (`cron:<id>`) post there too.
+/// Whether the conversation `key` lives in Discord. Scheduled jobs (`cron:<id>`) and heartbeats
+/// post there too.
 fn chats(key: &str) -> bool {
-    key.starts_with("discord:") || key.starts_with("cron:")
+    key.starts_with("discord:") || key.starts_with("cron:") || key.starts_with("heartbeat:")
 }
 
 /// End of the last complete tool round in the turn starting at `turn_start`, or `turn_start` if none.
@@ -393,6 +398,7 @@ pub(crate) fn request(
             document::view_tool(),
             memory::tool(),
             memory::history_tool(),
+            todo::tool(),
             skill::tool(),
             fetch::tool(),
             browser::tool(),
@@ -445,6 +451,9 @@ pub struct Agent {
     key: String,
     /// Who sent the current turn: a Discord user ID, or `None` for the terminal. Picks the memory.
     user: Option<u64>,
+    /// Conversation key new todos are posted about in: `key`, unless this conversation posts
+    /// somewhere else (a job or heartbeat run).
+    posts_to: String,
     system: String,
     messages: Vec<Message>,
 }
@@ -479,10 +488,16 @@ impl Agent {
             fetcher: Fetcher::new()?,
             mcp,
             key: key.to_owned(),
+            posts_to: key.to_owned(),
             user: None,
             system,
             messages,
         })
+    }
+
+    /// Sets where this conversation's output goes, so todos written in it are followed up there.
+    pub fn posts_to(&mut self, target: &str) {
+        target.clone_into(&mut self.posts_to);
     }
 
     pub fn describe(&self) -> String {
@@ -503,6 +518,22 @@ impl Agent {
             "saved; memory uses {used}/{} characters. Every conversation with this person sees it from its next message.",
             memory::CHAR_LIMIT
         ))
+    }
+
+    /// Validates and applies one todo tool call; problems go back to the model as text.
+    async fn todo(&self, args: &Value, io: &mut impl Io) -> Result<String> {
+        let todos = self.db.todos(self.user).await?;
+        let now = chrono::Utc::now().with_timezone(&self.config.timezone);
+        let edit = match todo::plan(&todos, args, now) {
+            Ok(edit) => edit,
+            Err(problem) => return Ok(format!("error: {problem}")),
+        };
+        let note = todo::describe(&edit, &todos);
+        self.db
+            .save_todo(self.user, self.posts_to.clone(), edit)
+            .await?;
+        io.note(&note).await?;
+        Ok("saved".to_owned())
     }
 
     async fn search_history(&self, args: &Value, io: &mut impl Io) -> Result<String> {
@@ -996,6 +1027,7 @@ impl Agent {
                         output
                     }
                     "memory" => self.remember(&call.function.arguments, io).await?,
+                    "todo" => self.todo(&call.function.arguments, io).await?,
                     "search_history" => self.search_history(&call.function.arguments, io).await?,
                     "skill" => self.skill(&call.function.arguments, io).await?,
                     "cron" if self.schedules() => self.cron(&call.function.arguments, io).await?,

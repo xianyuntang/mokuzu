@@ -105,24 +105,30 @@ fn timing(args: &Value, now: DateTime<Tz>) -> Result<Option<(Option<String>, i64
     match (text(args, "cron"), text(args, "at")) {
         (None, None) => Ok(None),
         (Some(schedule), None) => Ok(Some((Some(schedule.to_owned()), next_run(schedule, now)?))),
-        (None, Some(at)) => {
-            let naive = NaiveDateTime::parse_from_str(at, AT_FORMAT)
-                .map_err(|err| format!("`at` must look like 2026-10-02 09:00: {err}"))?;
-            let at = now
-                .timezone()
-                .from_local_datetime(&naive)
-                .earliest()
-                .ok_or("`at` does not exist in this time zone (a DST gap)")?;
-            if at <= now {
-                return Err(format!(
-                    "`at` is in the past; it is now {}",
-                    now.format(AT_FORMAT)
-                ));
-            }
-            Ok(Some((None, at.timestamp())))
-        }
+        (None, Some(at)) => Ok(Some((None, future_time("at", at, now)?))),
         (Some(_), Some(_)) => Err("give only one of `cron` or `at`".to_owned()),
     }
+}
+
+/// `text`, a `YYYY-MM-DD HH:MM` local time given as argument `name`, in Unix seconds; it must be
+/// after `now`.
+pub fn future_time(name: &str, text: &str, now: DateTime<Tz>) -> Result<i64, String> {
+    let naive = NaiveDateTime::parse_from_str(text, AT_FORMAT)
+        .map_err(|err| format!("`{name}` must look like 2026-10-02 09:00: {err}"))?;
+    let at = now
+        .timezone()
+        .from_local_datetime(&naive)
+        .earliest()
+        .ok_or(format!(
+            "`{name}` does not exist in this time zone (a DST gap)"
+        ))?;
+    if at <= now {
+        return Err(format!(
+            "`{name}` is in the past; it is now {}",
+            now.format(AT_FORMAT)
+        ));
+    }
+    Ok(at.timestamp())
 }
 
 /// A one-off copy of `job` due at `now`: the scheduler runs it on its next tick, in the job's
