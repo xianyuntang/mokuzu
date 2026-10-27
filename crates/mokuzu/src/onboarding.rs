@@ -133,9 +133,12 @@ const API: usize = 30;
 const BASE_URL: usize = 31;
 const MAX_TOKENS: usize = 32;
 const COMPACT_AT: usize = 33;
+const BROWSER_WIDTH: usize = 34;
+const BROWSER_HEIGHT: usize = 35;
+const VIEWER_PORT: usize = 36;
 /// First of the rows for already configured MCP servers, followed by the configured Discord
 /// servers' rows.
-const MCP_FIRST: usize = 34;
+const MCP_FIRST: usize = 37;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -412,6 +415,17 @@ impl Form {
             Kind::Text,
             current
                 .map_or(config::DEFAULT_COMPACT_AT_TOKENS, |c| c.compact_at_tokens)
+                .to_string(),
+        ));
+        let screen = current.map_or(config::DEFAULT_SCREEN, |c| c.browser_screen);
+        fields.push(field(4, "Browser width", Kind::Text, screen.0.to_string()));
+        fields.push(field(4, "Browser height", Kind::Text, screen.1.to_string()));
+        fields.push(field(
+            4,
+            "Browser viewer port",
+            Kind::Text,
+            current
+                .map_or(config::DEFAULT_VIEWER_PORT, |c| c.viewer_port)
                 .to_string(),
         ));
         let mcp_names: Vec<String> = current
@@ -693,6 +707,7 @@ impl Form {
                 self.required(DATABASE)?;
                 self.timezone()?;
                 self.model_options()?;
+                self.browser_options()?;
             }
         }
         Ok(())
@@ -723,6 +738,21 @@ impl Form {
             compact_at_tokens: self
                 .number(COMPACT_AT, config::MIN_COMPACT_AT_TOKENS)?
                 .filter(|&n| n != config::DEFAULT_COMPACT_AT_TOKENS),
+        })
+    }
+
+    /// The `[browser]` settings, each `None` when it is the default.
+    fn browser_options(&self) -> std::result::Result<BrowserOptions, String> {
+        Ok(BrowserOptions {
+            width: self
+                .number(BROWSER_WIDTH, config::MIN_SCREEN.0)?
+                .filter(|&n| n != config::DEFAULT_SCREEN.0),
+            height: self
+                .number(BROWSER_HEIGHT, config::MIN_SCREEN.1)?
+                .filter(|&n| n != config::DEFAULT_SCREEN.1),
+            viewer_port: self
+                .number(VIEWER_PORT, 1)?
+                .filter(|&n| n != config::DEFAULT_VIEWER_PORT),
         })
     }
 
@@ -908,6 +938,7 @@ impl Form {
             database: PathBuf::from(self.required(DATABASE)?),
             timezone: self.timezone()?,
             options: self.model_options()?,
+            browser: self.browser_options()?,
         })
     }
 
@@ -1130,6 +1161,9 @@ impl Form {
             SEARCH_RESULTS => self.search_results().err(),
             MAX_TOKENS => self.number::<u32>(i, 1).err(),
             COMPACT_AT => self.number(i, config::MIN_COMPACT_AT_TOKENS).err(),
+            BROWSER_WIDTH => self.number(i, config::MIN_SCREEN.0).err(),
+            BROWSER_HEIGHT => self.number(i, config::MIN_SCREEN.1).err(),
+            VIEWER_PORT => self.number::<u16>(i, 1).err(),
             SEARCH_URL | MCP_URL => (!value.starts_with("http://")
                 && !value.starts_with("https://"))
             .then(|| "must start with http:// or https://".to_owned()),
@@ -1149,6 +1183,9 @@ const CHECKED: &[usize] = &[
     SEARCH_RESULTS,
     MAX_TOKENS,
     COMPACT_AT,
+    BROWSER_WIDTH,
+    BROWSER_HEIGHT,
+    VIEWER_PORT,
 ];
 
 /// Background of the focused row.
@@ -1212,6 +1249,12 @@ fn help(i: usize) -> (&'static str, &'static str) {
             "When the conversation grows past about this many tokens, old tool output is cleared \
              and older turns are summarized. Lower it for models with a smaller context window."
         }
+        BROWSER_WIDTH | BROWSER_HEIGHT => {
+            "Screen size, in pixels, of the Chrome the browser tool drives when no monitor is \
+             plugged in. Larger makes screenshots and the /browser view sharper. Takes effect \
+             when Chrome next starts."
+        }
+        VIEWER_PORT => "Port of the /browser live view on this machine's network.",
         PROVIDER => {
             "Where Mokuzu's model runs: OpenCode Go, or Anthropic's API for Claude with an \
              Anthropic API key."
@@ -1320,6 +1363,15 @@ struct Answers {
     /// `None` follows this machine's time zone.
     timezone: Option<String>,
     options: ModelOptions,
+    browser: BrowserOptions,
+}
+
+/// `[browser]` keys, each `None` when it is the default.
+#[derive(Default)]
+struct BrowserOptions {
+    width: Option<u32>,
+    height: Option<u32>,
+    viewer_port: Option<u16>,
 }
 
 #[derive(Default)]
@@ -1408,6 +1460,19 @@ fn render_toml(answers: &Answers) -> String {
         log = quote(&answers.log_level),
         db = quote(&answers.database.to_string_lossy()),
     ));
+    let browser = &answers.browser;
+    if browser.width.is_some() || browser.height.is_some() || browser.viewer_port.is_some() {
+        text.push_str("\n[browser]\n");
+        if let Some(n) = browser.width {
+            text.push_str(&format!("width = {n}\n"));
+        }
+        if let Some(n) = browser.height {
+            text.push_str(&format!("height = {n}\n"));
+        }
+        if let Some(port) = browser.viewer_port {
+            text.push_str(&format!("viewer_port = {port}\n"));
+        }
+    }
     if let Some(reviewer) = &answers.auto_approval {
         text.push_str("\n[approval]\nmode = \"auto\"\n");
         if let Some(model) = reviewer {
@@ -1557,6 +1622,11 @@ mod tests {
                 max_tokens: Some(8000),
                 compact_at_tokens: Some(50_000),
             },
+            browser: BrowserOptions {
+                width: Some(1920),
+                height: None,
+                viewer_port: Some(8765),
+            },
         });
         let config = Config::parse(&text).expect("valid");
         assert_eq!(config.timezone, chrono_tz::Tz::Asia__Taipei);
@@ -1566,6 +1636,8 @@ mod tests {
             (config.max_tokens, config.compact_at_tokens),
             (8000, 50_000)
         );
+        assert_eq!(config.browser_screen, (1920, config::DEFAULT_SCREEN.1));
+        assert_eq!(config.viewer_port, 8765);
         assert_eq!(config.model, "qwen3.8-max");
         assert_eq!(
             config.approval,
@@ -1581,6 +1653,7 @@ mod tests {
         let mut reopened = Form::new(Some(&config)).expect("form");
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
+        assert_eq!(reopened.value(VIEWER_PORT), "8765");
         assert_eq!(
             reopened.model_options().expect("valid").max_tokens,
             Some(8000)
@@ -1635,6 +1708,7 @@ mod tests {
             database: PathBuf::from("/tmp/m.db"),
             timezone: None,
             options: ModelOptions::default(),
+            browser: BrowserOptions::default(),
         });
         let config = Config::parse(&text).expect("valid");
         let Some(config::Search::Brave(brave)) = &config.search else {
@@ -1752,7 +1826,18 @@ mod tests {
         assert!(form.check_step(form.step).is_err(), "below the minimum");
         assert!(form.field_error(COMPACT_AT).is_some());
         form.fields[COMPACT_AT].value = config::DEFAULT_COMPACT_AT_TOKENS.to_string();
+        form.fields[BROWSER_WIDTH].value = "100".to_owned();
+        assert!(form.check_step(form.step).is_err(), "screen too small");
+        form.fields[BROWSER_WIDTH].value = config::DEFAULT_SCREEN.0.to_string();
+        form.fields[VIEWER_PORT].value = "70000".to_owned();
+        assert!(form.check_step(form.step).is_err(), "not a port");
+        form.fields[VIEWER_PORT].value = config::DEFAULT_VIEWER_PORT.to_string();
         form.check_step(form.step).expect("advanced step valid");
+        let browser = form.browser_options().expect("valid");
+        assert!(
+            browser.width.is_none() && browser.viewer_port.is_none(),
+            "defaults aren't written"
+        );
         assert!(
             form.model_options()
                 .expect("valid")

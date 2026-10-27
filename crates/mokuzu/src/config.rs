@@ -11,6 +11,10 @@ pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 pub const DEFAULT_COMPACT_AT_TOKENS: usize = 200_000;
 pub const MIN_COMPACT_AT_TOKENS: usize = 10_000;
+/// Size of the screen the `browser` tool's Chrome fills, when it has no real one.
+pub const DEFAULT_SCREEN: (u32, u32) = (1280, 800);
+pub const MIN_SCREEN: (u32, u32) = (640, 480);
+pub const DEFAULT_VIEWER_PORT: u16 = 22050;
 
 /// Which OpenCode Go endpoint format a model speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -139,6 +143,19 @@ struct File {
     discord: Option<DiscordSection>,
     #[serde(default)]
     database: DatabaseSection,
+    #[serde(default)]
+    browser: BrowserSection,
+}
+
+/// `[browser]`: the Chrome the `browser` tool drives.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BrowserSection {
+    /// Screen size in pixels when Chrome runs on Xvfb or headless; defaults to `DEFAULT_SCREEN`.
+    width: Option<u32>,
+    height: Option<u32>,
+    /// Port of the `/browser` live view; defaults to `DEFAULT_VIEWER_PORT`.
+    viewer_port: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -489,6 +506,10 @@ pub struct Config {
     pub database_path: PathBuf,
     /// The user's time zone, for message timestamps and scheduled jobs.
     pub timezone: chrono_tz::Tz,
+    /// `(width, height)` of the screen the browser's Chrome fills when it has no real one.
+    pub browser_screen: (u32, u32),
+    /// Port of the `/browser` live view.
+    pub viewer_port: u16,
     /// File this was loaded from; empty when parsed from text.
     pub path: PathBuf,
 }
@@ -543,6 +564,20 @@ impl Config {
         for (name, server) in &file.mcp.servers {
             server.validate(name)?;
         }
+        let browser_screen = (
+            file.browser.width.unwrap_or(DEFAULT_SCREEN.0),
+            file.browser.height.unwrap_or(DEFAULT_SCREEN.1),
+        );
+        if browser_screen.0 < MIN_SCREEN.0 || browser_screen.1 < MIN_SCREEN.1 {
+            bail!(
+                "browser.width and browser.height must be at least {}x{}",
+                MIN_SCREEN.0,
+                MIN_SCREEN.1
+            );
+        }
+        if file.browser.viewer_port == Some(0) {
+            bail!("browser.viewer_port must be between 1 and 65535");
+        }
         let timezone = match file.timezone {
             Some(name) => name.parse().map_err(|_| {
                 anyhow::anyhow!("timezone {name:?} is not an IANA time zone like Asia/Taipei")
@@ -588,6 +623,8 @@ impl Config {
             discord: file.discord,
             database_path,
             timezone,
+            browser_screen,
+            viewer_port: file.browser.viewer_port.unwrap_or(DEFAULT_VIEWER_PORT),
             path: PathBuf::new(),
         })
     }
@@ -703,6 +740,24 @@ mod tests {
                 model: "kimi-k3".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn browser_section_sets_screen_and_port() {
+        let key = "[opencode-go]\napi_key = \"k\"\n";
+        let config = Config::parse(key).expect("valid");
+        assert_eq!(
+            (config.browser_screen, config.viewer_port),
+            (DEFAULT_SCREEN, DEFAULT_VIEWER_PORT)
+        );
+        let set = format!("{key}[browser]\nwidth = 1920\nheight = 1080\nviewer_port = 8765\n");
+        let config = Config::parse(&set).expect("valid");
+        assert_eq!(
+            (config.browser_screen, config.viewer_port),
+            ((1920, 1080), 8765)
+        );
+        assert!(Config::parse(&format!("{key}[browser]\nwidth = 100\n")).is_err());
+        assert!(Config::parse(&format!("{key}[browser]\nviewer_port = 0\n")).is_err());
     }
 
     #[test]

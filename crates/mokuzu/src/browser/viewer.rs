@@ -25,9 +25,7 @@ use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::OnceCell;
 
-use super::{
-    LOAD_LIMIT, REQUEST_TIMEOUT, SCREEN, SESSION, evaluate, key_event, mouse, random, send_key,
-};
+use super::{LOAD_LIMIT, REQUEST_TIMEOUT, SESSION, evaluate, key_event, mouse, random, send_key};
 
 /// Largest request body taken, enough for a pasted paragraph.
 const MAX_BODY: usize = 64 * 1024;
@@ -38,15 +36,16 @@ pub(super) static TABS: std::sync::Mutex<Vec<(u32, Page)>> = std::sync::Mutex::n
 
 /// The viewer's link, starting it on first use; it then serves until mokuzu exits.
 // ponytail: never stops once started; stop it with the session if an open port bothers anyone.
-pub(super) async fn link() -> Result<String> {
+pub(super) async fn link(port: u16) -> Result<String> {
     static LINK: OnceCell<String> = OnceCell::const_new();
-    LINK.get_or_try_init(start).await.cloned()
+    LINK.get_or_try_init(|| start(port)).await.cloned()
 }
 
-async fn start() -> Result<String> {
-    let listener = TcpListener::bind(("0.0.0.0", 0))
+/// Serves the viewer on `port`, or a free one when 0.
+async fn start(port: u16) -> Result<String> {
+    let listener = TcpListener::bind(("0.0.0.0", port))
         .await
-        .context("failed to open the viewer's port")?;
+        .context("failed to open the viewer's port; is browser.viewer_port taken?")?;
     let port = listener.local_addr()?.port();
     // ponytail: 128 bits from std's OS-seeded hasher keys; switch to getrandom if this ever
     // guards more than a LAN page.
@@ -176,12 +175,13 @@ async fn stream(page: &Page, write: &mut OwnedWriteHalf) -> Result<()> {
     // The page as it is now: Chrome sends nothing until it next repaints.
     frame(write, &super::shot(page).await?).await?;
     let mut frames = page.event_listener::<EventScreencastFrame>().await?;
+    let (width, height) = point(page, 0.75, 0.75).await?;
     let start = StartScreencastParams::builder()
         .format(StartScreencastFormat::Jpeg)
         // Smaller frames: on a Pi without a GPU, encoding them is most of each frame's cost.
         .quality(50)
-        .max_width(SCREEN.0 * 3 / 4)
-        .max_height(SCREEN.1 * 3 / 4)
+        .max_width(width as i64)
+        .max_height(height as i64)
         .build();
     page.execute(start).await?;
     let streamed = async {
@@ -550,7 +550,7 @@ mod tests {
     #[tokio::test]
     async fn requests_need_the_token() {
         // Its own viewer: `link`'s dies with the first test runtime that started it.
-        let link = start().await.expect("viewer starts");
+        let link = start(0).await.expect("viewer starts");
         let client = reqwest::Client::new();
         let page = client.get(&link).send().await.expect("page");
         assert_eq!(page.status(), 200);

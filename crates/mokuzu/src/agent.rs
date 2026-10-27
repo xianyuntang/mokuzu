@@ -759,7 +759,7 @@ impl Agent {
         io: &mut impl Io,
     ) -> Result<()> {
         if prompt.trim() == browser::BROWSER_COMMAND {
-            let link = browser::view_link().await?;
+            let link = browser::view_link(self.config.viewer_port).await?;
             return io
                 .say(&format!(
                     "Live view of the browser (this machine's network only): {link}"

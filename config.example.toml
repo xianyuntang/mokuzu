@@ -82,6 +82,15 @@ level = "warn"
 # [database]
 # path = "/Users/you/.local/share/mokuzu/mokuzu.db"
 
+# Optional. The Chrome the `browser` tool drives.
+# [browser]
+# # Screen size in pixels when no monitor is plugged in (Xvfb or headless); default 1280x800.
+# # Larger makes screenshots and the /browser live view sharper.
+# width = 1920
+# height = 1080
+# # Port of the /browser live view; default 22050.
+# viewer_port = 22050
+
 # Optional. Needed for `mokuzu serve`: chat with Mokuzu by DM to your Discord bot.
 # [discord]
 # token = "your-bot-token"

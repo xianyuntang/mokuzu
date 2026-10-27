@@ -55,8 +55,6 @@ const SETTLE: Duration = Duration::from_secs(1);
 const MAX_CHARS: usize = 15_000;
 /// Open tabs kept; opening another closes the one used longest ago.
 const MAX_TABS: usize = 5;
-/// Size of the Xvfb screen, which Chrome's window fills.
-const SCREEN: (u32, u32) = (1280, 800);
 /// Pixels one `scroll` moves.
 const SCROLL_STEP: f64 = 600.0;
 
@@ -129,8 +127,9 @@ return out.join(' ').replace(/ *\n[\s]*/g, '\n').trim();
 /// The `/browser` command: a link to a live view of the browser, where the user clicks and types.
 pub const BROWSER_COMMAND: &str = "/browser";
 
-pub async fn view_link() -> Result<String> {
-    viewer::link().await
+/// `port` is the viewer's port, taken on first use; 0 picks a free one.
+pub async fn view_link(port: u16) -> Result<String> {
+    viewer::link(port).await
 }
 
 pub fn tool() -> ToolDefinition {
@@ -204,7 +203,7 @@ pub async fn run(config: &Config, args: &Value, io: &mut impl Io) -> (String, Ve
         if session.as_ref().is_none_or(|s| s.driver.is_finished()) {
             tracing::debug!("starting Chrome");
             let profile = profile(config);
-            let started = Session::start(&profile);
+            let started = Session::start(&profile, config.browser_screen);
             let started = tokio::time::timeout(LAUNCH_TIMEOUT * 2, started)
                 .await
                 .map_err(|_| anyhow!("Chrome did not start or answer in time"))??;
@@ -242,12 +241,15 @@ struct Session {
     pointer: (f64, f64),
     /// The Xvfb Chrome draws on when no screen is plugged in; killed when the session goes.
     screen: Option<Child>,
+    /// `(width, height)` of the Xvfb or headless screen.
+    size: (u32, u32),
     sites: Sites,
 }
 
 impl Session {
-    /// Reattaches to a Chrome an earlier run left on `profile`, or launches one.
-    async fn start(profile: &Path) -> Result<Self> {
+    /// Reattaches to a Chrome an earlier run left on `profile`, or launches one on a `size`
+    /// screen when no real one is plugged in.
+    async fn start(profile: &Path, size: (u32, u32)) -> Result<Self> {
         let mut screen = None;
         let (mut browser, mut handler) = match reattach(profile).await {
             Some(attached) => attached,
@@ -255,10 +257,10 @@ impl Session {
                 std::fs::create_dir_all(profile)
                     .with_context(|| format!("failed to create {}", profile.display()))?;
                 if !screen_attached() {
-                    screen = virtual_screen().await;
+                    screen = virtual_screen(size).await;
                 }
                 let display = screen.as_ref().map(|(_, display)| display.as_str());
-                Browser::launch(launch_config(profile, display)?)
+                Browser::launch(launch_config(profile, display, size)?)
                     .await
                     .context("failed to start Chrome; close any other Chrome using its profile")?
             }
@@ -272,8 +274,9 @@ impl Session {
             tabs: Vec::new(),
             next: 0,
             // Mid-window, where a pointer plausibly rests after a page opens.
-            pointer: (640.0, 400.0),
+            pointer: (f64::from(size.0) / 2.0, f64::from(size.1) / 2.0),
             screen: screen.map(|(child, _)| child),
+            size,
             sites: Sites::load(profile.with_file_name("browser-sites")),
         })
     }
@@ -335,7 +338,7 @@ impl Session {
                         // Blank first, so the tab is kept even if the load below times out.
                         let page = self.browser.new_page("about:blank").await?;
                         if self.screen.is_some() {
-                            fill_screen(&page).await?;
+                            fill_screen(&page, self.size).await?;
                         }
                         self.next += 1;
                         self.tabs.push((self.next, page));
@@ -570,10 +573,14 @@ fn tab_name(args: &Args) -> String {
     args.tab.map_or_else(String::new, |n| n.to_string())
 }
 
-/// Chrome as a person would run it: headful on the real screen, or on `virtual_display` when
-/// there is none, headless only without either, and none of the automation flags chromiumoxide
-/// adds by default.
-fn launch_config(profile: &Path, virtual_display: Option<&str>) -> Result<BrowserConfig> {
+/// Chrome as a person would run it: headful on the real screen, or on a `size` `virtual_display`
+/// when there is none, headless only without either, and none of the automation flags
+/// chromiumoxide adds by default.
+fn launch_config(
+    profile: &Path,
+    virtual_display: Option<&str>,
+    size: (u32, u32),
+) -> Result<BrowserConfig> {
     let mut config = BrowserConfig::builder()
         .disable_default_args()
         // No startup tab: on Linux Chromium, chromiumoxide never sees a load finish in the tab
@@ -597,9 +604,9 @@ fn launch_config(profile: &Path, virtual_display: Option<&str>) -> Result<Browse
             .with_head()
             .env("DISPLAY", display)
             .arg("ozone-platform=x11")
-            .window_size(SCREEN.0, SCREEN.1),
+            .window_size(size.0, size.1),
         None if screen_attached() => config.with_head(),
-        None => config.new_headless_mode(),
+        None => config.new_headless_mode().window_size(size.0, size.1),
     };
     // Chrome refuses to start its sandbox as root, e.g. in a container.
     if std::env::var("USER").is_ok_and(|user| user == "root") {
@@ -610,9 +617,9 @@ fn launch_config(profile: &Path, virtual_display: Option<&str>) -> Result<Browse
     })
 }
 
-/// Stretches the window holding `page` over the Xvfb screen, which has no window manager to
-/// place or maximize it.
-async fn fill_screen(page: &Page) -> Result<()> {
+/// Stretches the window holding `page` over the `size` Xvfb screen, which has no window manager
+/// to place or maximize it.
+async fn fill_screen(page: &Page, (width, height): (u32, u32)) -> Result<()> {
     let window = page
         .execute(GetWindowForTargetParams::default())
         .await?
@@ -621,8 +628,8 @@ async fn fill_screen(page: &Page) -> Result<()> {
     let bounds = Bounds::builder()
         .left(0)
         .top(0)
-        .width(SCREEN.0)
-        .height(SCREEN.1)
+        .width(width)
+        .height(height)
         .build();
     page.execute(SetWindowBoundsParams::new(window, bounds))
         .await?;
@@ -641,14 +648,14 @@ fn screen_attached() -> bool {
 /// Starts Xvfb on a free display and returns it with its `DISPLAY` value, or `None` when Xvfb
 /// is not installed, so Chrome runs headful (no `HeadlessChrome` in its user agent) without a
 /// screen.
-async fn virtual_screen() -> Option<(Child, String)> {
+async fn virtual_screen((width, height): (u32, u32)) -> Option<(Child, String)> {
     let spawned = tokio::process::Command::new("Xvfb")
         .args([
             "-displayfd",
             "1",
             "-screen",
             "0",
-            &format!("{}x{}x24", SCREEN.0, SCREEN.1),
+            &format!("{width}x{height}x24"),
             "-nolisten",
             "tcp",
         ])
@@ -1075,6 +1082,7 @@ mod tests {
     async fn typing_on_the_live_view_reaches_the_page() {
         let mut session = Session::start(
             &std::env::temp_dir().join(format!("mokuzu-viewer-typing-{}", std::process::id())),
+            crate::config::DEFAULT_SCREEN,
         )
         .await
         .expect("Chrome starts");
@@ -1088,7 +1096,7 @@ mod tests {
         let target = session.tabs[0].1.clone();
         let _: bool = evaluate(&target, "document.body.innerHTML = '<input id=t style=\"position:fixed;inset:0;width:100%;height:100%;font-size:40px\">'; return true;").await.expect("input");
         viewer::publish(&session.tabs);
-        let link = view_link().await.expect("view");
+        let link = view_link(0).await.expect("view");
         let viewer = session
             .browser
             .new_page(link.as_str())
@@ -1142,7 +1150,9 @@ mod tests {
     async fn browser_round_trip() {
         let profile =
             std::env::temp_dir().join(format!("mokuzu-browser-test-{}", std::process::id()));
-        let mut session = Session::start(&profile).await.expect("Chrome starts");
+        let mut session = Session::start(&profile, crate::config::DEFAULT_SCREEN)
+            .await
+            .expect("Chrome starts");
         let io = &mut Approver;
         let (opened, _) = session
             .act(
@@ -1216,7 +1226,7 @@ mod tests {
         .await
         .expect("evaluate");
         assert!(!webdriver, "Chrome announces automation");
-        let link = view_link().await.expect("view");
+        let link = view_link(0).await.expect("view");
         viewer::publish(&session.tabs);
         let client = reqwest::Client::new();
         let tabs = client
