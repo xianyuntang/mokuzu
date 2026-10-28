@@ -293,7 +293,7 @@ async fn system_prompt(db: &Db, key: &str, config: &Config, user: Option<u64>) -
         "{IDENTITY}\n\n{tools}{guidance}\n\n{todo_guidance}\n\n{skills}\n\nOS: {os}. Working directory: {cwd}.\n\n{hint}\n\n{saved}\n\n{todos}",
         guidance = memory::GUIDANCE,
         todo_guidance = todo::GUIDANCE,
-        todos = todo::snapshot(&todos, config.timezone),
+        todos = todo::snapshot(&todos),
         skills = skill::section(&skills),
         hint = platform_hint(key),
         saved = memory::snapshot(&memories),
@@ -523,8 +523,7 @@ impl Agent {
     /// Validates and applies one todo tool call; problems go back to the model as text.
     async fn todo(&self, args: &Value, io: &mut impl Io) -> Result<String> {
         let todos = self.db.todos(self.user).await?;
-        let now = chrono::Utc::now().with_timezone(&self.config.timezone);
-        let edit = match todo::plan(&todos, args, now) {
+        let edit = match todo::plan(&todos, args) {
             Ok(edit) => edit,
             Err(problem) => return Ok(format!("error: {problem}")),
         };

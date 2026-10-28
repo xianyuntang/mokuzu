@@ -11,7 +11,6 @@ use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 
 use crate::agent::Io;
-use crate::cron;
 use crate::db::Todo;
 
 /// How often the heartbeat checks open todos.
@@ -30,37 +29,34 @@ const SNAPSHOT_LIMIT: usize = 3_000;
 /// Stable guidance for the system prompt; the todos themselves come from `snapshot`.
 pub const GUIDANCE: &str = "\
 # Todos
-You keep a todo list for the person sending the current message. When they ask you to remind \
-them, follow up, check back, or do something later, or when you promise later work yourself, add \
-it with the todo tool in that same response, with a `due` time when one is known. Write each todo \
-so it makes sense alone, with the details needed to act on it. While working one, replace its \
-content with what is left and what you found; mark it done once finished or no longer wanted. \
-Every 30 minutes, and when a todo's due time comes, you wake on your own to work through open \
-todos and tell the user only what needs them; a due time is the reminder, so a todo with one \
-needs no scheduled job. Never say you noted something unless the todo call succeeded.";
+You keep a todo list for the person sending the current message, for things with no set time \
+that you follow until some condition is met. Add one with the todo tool in the same response \
+whenever you start something whose outcome is not in yet, without being asked: after opening a \
+PR, follow its CI/CD, review, or merge; after starting a deploy, build, or long job, follow it to \
+the end; after sending a message, wait for the reply. Also add one when the user asks you to watch \
+something (\"tell me when it merges\", \"let me know if the price drops below X\"). Write each todo \
+so it works alone: what to check (URL, repo, job id), how, what counts as done, and what to tell \
+the user then. Every 30 minutes you wake on your own to check open todos: when one is met or has \
+failed, tell the user the outcome and mark it done; otherwise update its progress and stay \
+silent. For anything at a set time (a reminder in 5 minutes, a task tomorrow at 8, every \
+morning), use cron, not a todo. Never say you are tracking something unless the todo call \
+succeeded.";
 
 /// A change the todo tool asked for, already validated against the current todos.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Edit {
-    Add {
-        content: String,
-        due: Option<i64>,
-    },
-    Update {
-        id: i64,
-        content: String,
-        due: Option<i64>,
-    },
+    Add(String),
+    Update { id: i64, content: String },
     Done(i64),
 }
 
 pub fn tool() -> ToolDefinition {
     ToolDefinition {
         name: "todo".to_owned(),
-        description: "Add, update, or finish a todo for the person sending the current message. \
-                      `add` needs `content`; `update` needs `id` and a new `content` (the whole \
-                      new text, progress included), `due`, or both; `done` needs `id` and deletes \
-                      it. Open todos are listed in your instructions."
+        description: "Add, update, or finish a todo for the person sending the current message: \
+                      something to follow until a condition is met. `add` needs `content`; \
+                      `update` needs `id` and the whole new `content`, progress included; `done` \
+                      needs `id` and deletes it. Open todos are listed in your instructions."
             .to_owned(),
         parameters: json!({
             "type": "object",
@@ -68,11 +64,7 @@ pub fn tool() -> ToolDefinition {
                 "action": {"type": "string", "enum": ["add", "update", "done"]},
                 "content": {
                     "type": "string",
-                    "description": "For add and update: what to do, self-contained, in the user's language.",
-                },
-                "due": {
-                    "type": "string",
-                    "description": "For add and update: when it is due, `YYYY-MM-DD HH:MM` in the user's time zone. For update, `none` clears it.",
+                    "description": "For add and update: what to check, how, and what counts as done, self-contained, in the user's language.",
                 },
                 "id": {"type": "integer", "description": "For update and done: the todo's id."},
             },
@@ -81,8 +73,8 @@ pub fn tool() -> ToolDefinition {
     }
 }
 
-/// Validates a todo tool call against `todos` at time `now`; errors are messages for the model.
-pub fn plan(todos: &[Todo], args: &Value, now: DateTime<Tz>) -> Result<Edit, String> {
+/// Validates a todo tool call against `todos`; errors are messages for the model.
+pub fn plan(todos: &[Todo], args: &Value) -> Result<Edit, String> {
     let content = args["content"]
         .as_str()
         .map(str::trim)
@@ -92,31 +84,13 @@ pub fn plan(todos: &[Todo], args: &Value, now: DateTime<Tz>) -> Result<Edit, Str
             "`content` is over {CONTENT_LIMIT} characters; keep only what is left to do"
         ));
     }
-    let due = args["due"]
-        .as_str()
-        .map(str::trim)
-        .filter(|d| !d.is_empty());
-    let parse_due = |due: &str| cron::future_time("due", due, now);
+    let content = || content.map(str::to_owned);
     match args["action"].as_str().unwrap_or_default() {
-        "add" => Ok(Edit::Add {
-            content: content.ok_or("`content` is required for add")?.to_owned(),
-            due: due.map(parse_due).transpose()?,
+        "add" => Ok(Edit::Add(content().ok_or("`content` is required for add")?)),
+        "update" => Ok(Edit::Update {
+            id: target(todos, args)?.id,
+            content: content().ok_or("`content` is required for update")?,
         }),
-        "update" => {
-            let todo = target(todos, args)?;
-            if content.is_none() && due.is_none() {
-                return Err("update needs a new `content`, `due`, or both".to_owned());
-            }
-            Ok(Edit::Update {
-                id: todo.id,
-                content: content.unwrap_or(&todo.content).to_owned(),
-                due: match due {
-                    None => todo.due,
-                    Some("none") => None,
-                    Some(due) => Some(parse_due(due)?),
-                },
-            })
-        }
         "done" => Ok(Edit::Done(target(todos, args)?.id)),
         other => Err(format!(
             "unknown action {other:?}; use add, update, or done"
@@ -135,28 +109,20 @@ fn target<'a>(todos: &'a [Todo], args: &Value) -> Result<&'a Todo, String> {
         .ok_or_else(|| format!("no todo #{id}; open todos are in your instructions"))
 }
 
-/// One todo as a line: `#id [due …] content`.
-fn line(todo: &Todo, zone: Tz) -> String {
-    match todo.due {
-        Some(due) => format!(
-            "#{} [due {}] {}",
-            todo.id,
-            cron::local_time(due, zone),
-            todo.content
-        ),
-        None => format!("#{} {}", todo.id, todo.content),
-    }
+/// One todo as a line: `#id content`.
+fn line(todo: &Todo) -> String {
+    format!("#{} {}", todo.id, todo.content)
 }
 
 /// The open todos as they appear in the system prompt, newest kept when over budget.
-pub fn snapshot(todos: &[Todo], zone: Tz) -> String {
+pub fn snapshot(todos: &[Todo]) -> String {
     if todos.is_empty() {
         return "Open todos: none.".to_owned();
     }
     let mut lines = Vec::new();
     let mut used = 0;
     for todo in todos.iter().rev() {
-        let line = line(todo, zone);
+        let line = line(todo);
         used += line.chars().count();
         if used > SNAPSHOT_LIMIT {
             break;
@@ -177,7 +143,7 @@ pub fn snapshot(todos: &[Todo], zone: Tz) -> String {
 /// One line telling the user what changed.
 pub fn describe(edit: &Edit, todos: &[Todo]) -> String {
     match edit {
-        Edit::Add { content, .. } => format!("📝 todo: {content}"),
+        Edit::Add(content) => format!("📝 todo: {content}"),
         Edit::Update { content, .. } => format!("📝 todo updated: {content}"),
         Edit::Done(id) => format!(
             "✅ done: {}",
@@ -191,33 +157,19 @@ pub fn describe(edit: &Edit, todos: &[Todo]) -> String {
 
 /// What the model is told on a heartbeat run over `todos`, all written in one conversation.
 pub fn heartbeat_prompt(todos: &[Todo], now: DateTime<Tz>) -> String {
-    let list: Vec<String> = todos
-        .iter()
-        .map(|todo| {
-            let mut line = line(todo, now.timezone());
-            if todo.due.is_some_and(|due| due <= now.timestamp()) {
-                line.push_str(" (due now)");
-            }
-            line
-        })
-        .collect();
+    let list: Vec<String> = todos.iter().map(line).collect();
     format!(
         "[Heartbeat at {now}. You woke on your own to check the todos written in this \
          conversation; nobody is watching live and actions that need approval will be denied.\n\
-         Work each one you can make progress on with your tools now. Update its content with what \
-         you found and what is left, or mark it done. A todo that is only a reminder is done once \
-         you remind the user, so mark it done rather than reminding again next time. Then \
-         message the user only if something is \
-         due, finished, or needs them, in their language (from saved facts, else the todos'), not \
-         this note's. Otherwise reply exactly {SILENT} and nothing else; it is not posted.]\n\n{}",
+         Check each one with your tools now. When its condition is met or it has failed, tell the \
+         user the outcome (say why if it failed, and ask what next if it needs them) and mark it \
+         done. Otherwise update its content with what you found and what is left. Message the \
+         user only about outcomes or what needs them, in their language (from saved facts, else \
+         the todos'), not this note's. If there is nothing to tell, reply exactly {SILENT} and \
+         nothing else; it is not posted.]\n\n{}",
         list.join("\n"),
         now = now.format("%Y-%m-%d %H:%M"),
     )
-}
-
-/// Whether `todo`'s due time falls after `after`, up to and including `now`.
-pub fn came_due(todo: &Todo, after: i64, now: i64) -> bool {
-    todo.due.is_some_and(|due| after < due && due <= now)
 }
 
 /// Whether a heartbeat's last reply means "nothing to say".
@@ -306,98 +258,55 @@ mod tests {
             .expect("time")
     }
 
-    fn todo(id: i64, content: &str, due: Option<i64>) -> Todo {
+    fn todo(id: i64, content: &str) -> Todo {
         Todo {
             id,
             user: Some(7),
             target: "discord:1".to_owned(),
             content: content.to_owned(),
-            due,
         }
     }
 
     #[test]
     fn plan_validates_calls() {
-        let todos = [todo(1, "send the report", None)];
-        let tomorrow = now().timestamp() + 86_400;
+        let todos = [todo(1, "watch PR #12's CI")];
         assert_eq!(
             plan(
                 &todos,
-                &json!({"action": "add", "content": " call mom ", "due": "2026-10-29 09:00"}),
-                now()
+                &json!({"action": "add", "content": " watch the deploy "})
             ),
-            Ok(Edit::Add {
-                content: "call mom".to_owned(),
-                due: Some(tomorrow)
-            })
+            Ok(Edit::Add("watch the deploy".to_owned()))
         );
-        assert!(plan(&todos, &json!({"action": "add"}), now()).is_err());
-        assert!(
-            plan(
-                &todos,
-                &json!({"action": "add", "content": "x", "due": "2026-10-27 09:00"}),
-                now()
-            )
-            .is_err(),
-            "due in the past"
-        );
-        assert!(
-            plan(
-                &todos,
-                &json!({"action": "add", "content": "x", "due": "tomorrow"}),
-                now()
-            )
-            .is_err()
-        );
+        assert!(plan(&todos, &json!({"action": "add"})).is_err());
         assert_eq!(
             plan(
                 &todos,
-                &json!({"action": "update", "id": 1, "due": "2026-10-29 09:00"}),
-                now()
+                &json!({"action": "update", "id": 1, "content": "CI running, 2 of 5 checks done"})
             ),
             Ok(Edit::Update {
                 id: 1,
-                content: "send the report".to_owned(),
-                due: Some(tomorrow)
+                content: "CI running, 2 of 5 checks done".to_owned()
             })
         );
-        let dated = [todo(1, "send the report", Some(tomorrow))];
+        assert!(plan(&todos, &json!({"action": "update", "id": 1})).is_err());
+        assert!(plan(&todos, &json!({"action": "done", "id": 2})).is_err());
         assert_eq!(
-            plan(
-                &dated,
-                &json!({"action": "update", "id": 1, "due": "none"}),
-                now()
-            ),
-            Ok(Edit::Update {
-                id: 1,
-                content: "send the report".to_owned(),
-                due: None
-            })
-        );
-        assert!(plan(&todos, &json!({"action": "update", "id": 1}), now()).is_err());
-        assert!(plan(&todos, &json!({"action": "done", "id": 2}), now()).is_err());
-        assert_eq!(
-            plan(&todos, &json!({"action": "done", "id": 1}), now()),
+            plan(&todos, &json!({"action": "done", "id": 1})),
             Ok(Edit::Done(1))
         );
+        let long = json!({"action": "add", "content": "x".repeat(CONTENT_LIMIT + 1)});
+        assert!(plan(&todos, &long).is_err());
     }
 
     #[test]
-    fn heartbeat_prompt_marks_due_todos() {
-        let past = now().timestamp() - 60;
+    fn heartbeat_prompt_lists_todos() {
         let prompt = heartbeat_prompt(
-            &[
-                todo(1, "send the report", Some(past)),
-                todo(2, "watch the PR", None),
-            ],
+            &[todo(1, "watch PR #12's CI"), todo(2, "wait for Amy")],
             now(),
         );
-        assert!(prompt.contains("#1 [due 2026-10-28 08:59] send the report (due now)"));
-        assert!(prompt.contains("#2 watch the PR"));
+        assert!(prompt.starts_with("[Heartbeat at 2026-10-28 09:00."));
+        assert!(prompt.ends_with("#1 watch PR #12's CI\n#2 wait for Amy"));
         assert!(is_silent(" NO_REPLY\n") && !is_silent("NO_REPLY, but the PR merged"));
-        let due = todo(1, "x", Some(100));
-        assert!(came_due(&due, 99, 100) && !came_due(&due, 100, 130) && !came_due(&due, 60, 99));
-        assert!(!came_due(&todo(2, "x", None), 0, 200));
     }
 
     /// Records what reaches the user.
@@ -430,16 +339,16 @@ mod tests {
         let mut quiet = Quiet::new(&mut seen);
         quiet.say("NO_REPLY").await.expect("say");
         quiet.note("✅ done: x").await.expect("note");
-        quiet.say("The report is due now.").await.expect("say");
+        quiet.say("PR #12 is green.").await.expect("say");
         assert!(quiet.finish().await.expect("finish"));
-        assert_eq!(seen.0, ["note ✅ done: x", "say The report is due now."]);
+        assert_eq!(seen.0, ["note ✅ done: x", "say PR #12 is green."]);
     }
 
     #[test]
     fn snapshot_keeps_newest_within_budget() {
         let long = "x".repeat(CONTENT_LIMIT);
-        let todos: Vec<Todo> = (1..=5).map(|id| todo(id, &long, None)).collect();
-        let text = snapshot(&todos, Tz::UTC);
+        let todos: Vec<Todo> = (1..=5).map(|id| todo(id, &long)).collect();
+        let text = snapshot(&todos);
         assert!(text.contains("#5 ") && !text.contains("#1 "));
         assert!(text.ends_with("(3 older todos not shown; finish or merge some)"));
     }

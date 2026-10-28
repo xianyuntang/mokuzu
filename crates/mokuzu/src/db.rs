@@ -26,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_skills_per_user.sql"),
     include_str!("../migrations/0012_message_search.sql"),
     include_str!("../migrations/0013_todos.sql"),
+    include_str!("../migrations/0014_drop_todo_due.sql"),
 ];
 
 /// Row of `conversations`.
@@ -148,8 +149,6 @@ pub struct Todo {
     /// Conversation key it was written in, where the heartbeat posts about it.
     pub target: String,
     pub content: String,
-    /// Unix seconds.
-    pub due: Option<i64>,
 }
 
 impl Todo {
@@ -161,7 +160,6 @@ impl Todo {
                 .map(i64::cast_unsigned),
             target: row.get("target")?,
             content: row.get("content")?,
-            due: row.get("due")?,
         })
     }
 }
@@ -474,7 +472,7 @@ impl Db {
     pub async fn todos(&self, user: Option<u64>) -> Result<Vec<Todo>> {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, user_id, target, content, due FROM todos WHERE user_id IS ?1 ORDER BY id",
+                "SELECT id, user_id, target, content FROM todos WHERE user_id IS ?1 ORDER BY id",
             )?;
             let rows = stmt.query_map(params![sql_user(user)], Todo::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -486,7 +484,7 @@ impl Db {
     pub async fn all_todos(&self) -> Result<Vec<Todo>> {
         self.with_conn(move |conn| {
             let mut stmt =
-                conn.prepare("SELECT id, user_id, target, content, due FROM todos ORDER BY id")?;
+                conn.prepare("SELECT id, user_id, target, content FROM todos ORDER BY id")?;
             let rows = stmt.query_map([], Todo::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -498,13 +496,13 @@ impl Db {
     pub async fn save_todo(&self, user: Option<u64>, target: String, edit: TodoEdit) -> Result<()> {
         self.with_conn(move |conn| {
             match edit {
-                TodoEdit::Add { content, due } => conn.execute(
-                    "INSERT INTO todos (user_id, target, content, due) VALUES (?1, ?2, ?3, ?4)",
-                    params![sql_user(user), target, content, due],
+                TodoEdit::Add(content) => conn.execute(
+                    "INSERT INTO todos (user_id, target, content) VALUES (?1, ?2, ?3)",
+                    params![sql_user(user), target, content],
                 )?,
-                TodoEdit::Update { id, content, due } => conn.execute(
-                    "UPDATE todos SET content = ?2, due = ?3 WHERE id = ?1 AND user_id IS ?4",
-                    params![id, content, due, sql_user(user)],
+                TodoEdit::Update { id, content } => conn.execute(
+                    "UPDATE todos SET content = ?2 WHERE id = ?1 AND user_id IS ?3",
+                    params![id, content, sql_user(user)],
                 )?,
                 TodoEdit::Done(id) => conn.execute(
                     "DELETE FROM todos WHERE id = ?1 AND user_id IS ?2",
@@ -760,22 +758,19 @@ mod tests {
     #[tokio::test]
     async fn todos_are_per_user() {
         let db = Db::open_in_memory().expect("open");
-        let add = |content: &str, due| TodoEdit::Add {
-            content: content.to_owned(),
-            due,
-        };
-        db.save_todo(Some(7), "discord:1".to_owned(), add("report", Some(60)))
+        let add = |content: &str| TodoEdit::Add(content.to_owned());
+        db.save_todo(Some(7), "discord:1".to_owned(), add("report"))
             .await
             .expect("add");
-        db.save_todo(None, "terminal".to_owned(), add("mine", None))
+        db.save_todo(None, "terminal".to_owned(), add("mine"))
             .await
             .expect("add");
         let todos = db.todos(Some(7)).await.expect("load");
         assert_eq!(todos.len(), 1);
         let todo = &todos[0];
         assert_eq!(
-            (todo.target.as_str(), todo.content.as_str(), todo.due),
-            ("discord:1", "report", Some(60))
+            (todo.target.as_str(), todo.content.as_str()),
+            ("discord:1", "report")
         );
         let other = db.todos(None).await.expect("load")[0].id;
         db.save_todo(Some(7), String::new(), TodoEdit::Done(other))
@@ -785,16 +780,12 @@ mod tests {
         let update = TodoEdit::Update {
             id: todo.id,
             content: "report, draft sent".to_owned(),
-            due: None,
         };
         db.save_todo(Some(7), String::new(), update)
             .await
             .expect("update");
         let todos = db.todos(Some(7)).await.expect("load");
-        assert_eq!(
-            (todos[0].content.as_str(), todos[0].due),
-            ("report, draft sent", None)
-        );
+        assert_eq!(todos[0].content, "report, draft sent");
         db.save_todo(Some(7), String::new(), TodoEdit::Done(todo.id))
             .await
             .expect("done");

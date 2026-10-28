@@ -112,7 +112,7 @@ fn timing(args: &Value, now: DateTime<Tz>) -> Result<Option<(Option<String>, i64
 
 /// `text`, a `YYYY-MM-DD HH:MM` local time given as argument `name`, in Unix seconds; it must be
 /// after `now`.
-pub fn future_time(name: &str, text: &str, now: DateTime<Tz>) -> Result<i64, String> {
+fn future_time(name: &str, text: &str, now: DateTime<Tz>) -> Result<i64, String> {
     let naive = NaiveDateTime::parse_from_str(text, AT_FORMAT)
         .map_err(|err| format!("`{name}` must look like 2026-10-02 09:00: {err}"))?;
     let at = now
