@@ -11,7 +11,7 @@ pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 pub const DEFAULT_COMPACT_AT_TOKENS: usize = 200_000;
 pub const MIN_COMPACT_AT_TOKENS: usize = 10_000;
-/// Size of the screen the `browser` tool's Chrome fills, when it has no real one.
+/// Size of the virtual desktop browsers draw on, when there is no real screen.
 pub const DEFAULT_SCREEN: (u32, u32) = (1280, 800);
 pub const MIN_SCREEN: (u32, u32) = (640, 480);
 pub const DEFAULT_VIEWER_PORT: u16 = 22050;
@@ -147,7 +147,7 @@ struct File {
     browser: BrowserSection,
 }
 
-/// `[browser]`: the Chrome the `browser` tool drives.
+/// `[browser]`: the virtual desktop browsers draw on, and its live view.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowserSection {
@@ -506,7 +506,7 @@ pub struct Config {
     pub database_path: PathBuf,
     /// The user's time zone, for message timestamps and scheduled jobs.
     pub timezone: chrono_tz::Tz,
-    /// `(width, height)` of the screen the browser's Chrome fills when it has no real one.
+    /// `(width, height)` of the virtual desktop browsers draw on when there is no real screen.
     pub browser_screen: (u32, u32),
     /// Port of the `/browser` live view.
     pub viewer_port: u16,

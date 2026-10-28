@@ -1250,9 +1250,9 @@ fn help(i: usize) -> (&'static str, &'static str) {
              and older turns are summarized. Lower it for models with a smaller context window."
         }
         BROWSER_WIDTH | BROWSER_HEIGHT => {
-            "Screen size, in pixels, of the Chrome the browser tool drives when no monitor is \
+            "Screen size, in pixels, of the virtual desktop browsers draw on when no monitor is \
              plugged in. Larger makes screenshots and the /browser view sharper. Takes effect \
-             when Chrome next starts."
+             when mokuzu next starts."
         }
         VIEWER_PORT => "Port of the /browser live view on this machine's network.",
         PROVIDER => {

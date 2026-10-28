@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rig_core::completion::ToolDefinition;
+use rig_core::message::{DocumentSourceKind, Image, ImageMediaType, MimeType as _};
 use rmcp::ServiceExt as _;
 use rmcp::model::{CallToolRequestParams, ContentBlock, Tool};
 use rmcp::service::{RoleClient, RunningService};
@@ -52,9 +53,11 @@ impl std::fmt::Debug for Mcp {
 
 impl Mcp {
     /// Starts every server at once; a server that fails is logged and skipped.
-    pub async fn connect(servers: &BTreeMap<String, McpServer>) -> Self {
+    /// Local servers get `display` as their `DISPLAY` unless their `env` sets one, so a browser
+    /// they open headed shows up on mokuzu's virtual desktop.
+    pub async fn connect(servers: &BTreeMap<String, McpServer>, display: Option<&str>) -> Self {
         let started = futures::future::join_all(servers.iter().map(|(name, config)| async move {
-            let started = tokio::time::timeout(CONNECT_TIMEOUT, start(name, config)).await;
+            let started = tokio::time::timeout(CONNECT_TIMEOUT, start(name, config, display)).await;
             match started {
                 Ok(Ok(server)) => Some(server),
                 Ok(Err(err)) => {
@@ -89,8 +92,14 @@ impl Mcp {
     }
 
     /// Runs the MCP tool the model called `name`, or returns `None` if no server offers it.
-    /// Failures of the tool itself come back as text for the model.
-    pub async fn call(&self, name: &str, args: &Value, io: &mut impl Io) -> Option<Result<String>> {
+    /// Failures of the tool itself come back as text for the model, and images it returns
+    /// alongside.
+    pub async fn call(
+        &self,
+        name: &str,
+        args: &Value,
+        io: &mut impl Io,
+    ) -> Option<Result<(String, Vec<Image>)>> {
         let (server, tool) = self.servers.iter().find_map(|server| {
             let (_, tool) = server.tools.iter().find(|(exposed, _)| exposed == name)?;
             Some((server, tool))
@@ -104,7 +113,7 @@ impl Mcp {
     }
 
     /// Runs `name` if it comes from a server with `approve = false`, with no one to ask or tell,
-    /// as swarm crabs do. Returns `None` for any other name.
+    /// as swarm crabs do; images it returns are left out. Returns `None` for any other name.
     pub async fn call_unapproved(&self, name: &str, args: &Value) -> Option<String> {
         let (server, tool) = self
             .servers
@@ -114,7 +123,7 @@ impl Mcp {
                 let (_, tool) = server.tools.iter().find(|(exposed, _)| exposed == name)?;
                 Some((server, tool))
             })?;
-        let (output, ok) = server.invoke(tool, args).await;
+        let (output, ok, _) = server.invoke(tool, args).await;
         Some(if ok {
             output
         } else {
@@ -124,7 +133,12 @@ impl Mcp {
 }
 
 impl Server {
-    async fn call(&self, tool: &str, args: &Value, io: &mut impl Io) -> Result<String> {
+    async fn call(
+        &self,
+        tool: &str,
+        args: &Value,
+        io: &mut impl Io,
+    ) -> Result<(String, Vec<Image>)> {
         let shown = format!(
             "{} → {tool}\n{}",
             self.name,
@@ -132,24 +146,25 @@ impl Server {
         );
         if self.approve {
             if !io.confirm(&shown).await? {
-                return Ok("error: the user denied this call".to_owned());
+                return Ok(("error: the user denied this call".to_owned(), Vec::new()));
             }
         } else {
             io.note(&format!("🔌 {} → {tool}", self.name)).await?;
         }
-        let (output, ok) = self.invoke(tool, args).await;
+        let (output, ok, images) = self.invoke(tool, args).await;
         if self.approve {
             io.ran(&output, ok).await?;
         }
-        Ok(if ok {
+        let output = if ok {
             output
         } else {
             format!("error: {output}")
-        })
+        };
+        Ok((output, images))
     }
 
-    /// Calls `tool` on the server: its output, and whether it succeeded.
-    async fn invoke(&self, tool: &str, args: &Value) -> (String, bool) {
+    /// Calls `tool` on the server: its output, whether it succeeded, and the images it returned.
+    async fn invoke(&self, tool: &str, args: &Value) -> (String, bool, Vec<Image>) {
         let mut params = CallToolRequestParams::new(tool.to_owned());
         if let Value::Object(args) = args {
             params = params.with_arguments(args.clone());
@@ -162,18 +177,30 @@ impl Server {
                 {
                     text.push(structured.to_string());
                 }
-                (truncate(text.join("\n")), result.is_error != Some(true))
+                let images = result.content.iter().filter_map(image).collect();
+                (
+                    truncate(text.join("\n")),
+                    result.is_error != Some(true),
+                    images,
+                )
             }
-            Err(err) => (format!("{err:#}"), false),
+            Err(err) => (format!("{err:#}"), false, Vec::new()),
         }
     }
 }
 
 /// Connects to one server and lists its tools.
-async fn start(name: &str, config: &McpServer) -> Result<(Server, Vec<ToolDefinition>)> {
+async fn start(
+    name: &str,
+    config: &McpServer,
+    display: Option<&str>,
+) -> Result<(Server, Vec<ToolDefinition>)> {
     let client = match (&config.command, &config.url) {
         (Some(command), _) => {
             let mut cmd = tokio::process::Command::new(command);
+            if let Some(display) = display {
+                cmd.env("DISPLAY", display);
+            }
             cmd.args(&config.args)
                 .envs(config.env.iter().map(|(k, v)| (k, v.as_str())));
             let (transport, stderr) = TokioChildProcess::builder(cmd)
@@ -255,11 +282,12 @@ fn definition(exposed: &str, tool: &Tool) -> ToolDefinition {
     }
 }
 
-/// Text of one result block; other kinds are named, since only text goes back to the model.
+/// Text of one result block; other kinds are named, since only text and images (see `image`) go
+/// back to the model.
 fn describe(block: &ContentBlock) -> String {
     match block {
         ContentBlock::Text(text) => text.text.clone(),
-        ContentBlock::Image(_) => "[image omitted]".to_owned(),
+        ContentBlock::Image(_) => "[image]".to_owned(),
         ContentBlock::Audio(_) => "[audio omitted]".to_owned(),
         ContentBlock::Resource(resource) => {
             serde_json::to_string(&resource.resource).unwrap_or_default()
@@ -267,6 +295,18 @@ fn describe(block: &ContentBlock) -> String {
         ContentBlock::ResourceLink(link) => format!("[resource: {}]", link.uri),
         _ => "[unsupported content omitted]".to_owned(),
     }
+}
+
+/// An image block as an image for the model, already base64 as providers take it.
+fn image(block: &ContentBlock) -> Option<Image> {
+    let ContentBlock::Image(image) = block else {
+        return None;
+    };
+    Some(Image {
+        data: DocumentSourceKind::Base64(image.data.clone()),
+        media_type: ImageMediaType::from_mime_type(&image.mime_type),
+        ..Image::default()
+    })
 }
 
 fn truncate(mut text: String) -> String {
@@ -310,7 +350,7 @@ mod tests {
              args = [\"-y\", \"@modelcontextprotocol/server-everything\"]\n",
         )
         .expect("valid");
-        let mcp = Mcp::connect(&config.mcp).await;
+        let mcp = Mcp::connect(&config.mcp, None).await;
         assert!(mcp.tools().iter().any(|t| t.name == "every__echo"));
         let mut io = Approver::default();
         let out = mcp
@@ -321,7 +361,8 @@ mod tests {
             )
             .await
             .expect("tool exists")
-            .expect("call runs");
+            .expect("call runs")
+            .0;
         assert!(out.contains("hi") && !out.starts_with("error"), "{out}");
         assert_eq!(io.0.len(), 1, "asked for approval once");
         assert!(
@@ -329,6 +370,14 @@ mod tests {
                 .await
                 .is_none()
         );
+    }
+
+    #[test]
+    fn image_blocks_reach_the_model() {
+        let shot = image(&ContentBlock::image("aGk=", "image/png")).expect("an image");
+        assert_eq!(shot.data, DocumentSourceKind::Base64("aGk=".to_owned()));
+        assert_eq!(shot.media_type, Some(ImageMediaType::PNG));
+        assert!(image(&ContentBlock::text("hi")).is_none());
     }
 
     #[test]

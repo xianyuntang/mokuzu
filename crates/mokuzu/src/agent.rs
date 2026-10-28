@@ -401,7 +401,6 @@ pub(crate) fn request(
             todo::tool(),
             skill::tool(),
             fetch::tool(),
-            browser::tool(),
             settings::tool(),
         ]
         .into_iter()
@@ -796,7 +795,7 @@ impl Agent {
             let link = browser::view_link(self.config.viewer_port).await?;
             return io
                 .say(&format!(
-                    "Live view of the browser (this machine's network only): {link}"
+                    "Live view of mokuzu's desktop (this machine's network only): {link}"
                 ))
                 .await;
         }
@@ -1056,12 +1055,6 @@ impl Agent {
                         images.extend(pages.into_iter().map(UserContent::Image));
                         output
                     }
-                    "browser" => {
-                        let (output, shots) =
-                            browser::run(&self.config, &call.function.arguments, io).await;
-                        images.extend(shots.into_iter().map(UserContent::Image));
-                        output
-                    }
                     "web_search" if self.search.is_some() => {
                         self.web_search(&call.function.arguments, io).await?
                     }
@@ -1080,7 +1073,11 @@ impl Agent {
                         None => "error: cast_crabs needs web search configured".to_owned(),
                     },
                     other => match self.mcp.call(other, &call.function.arguments, io).await {
-                        Some(output) => output?,
+                        Some(output) => {
+                            let (output, shots) = output?;
+                            images.extend(shots.into_iter().map(UserContent::Image));
+                            output
+                        }
                         None => format!("error: unknown tool `{other}`"),
                     },
                 };
@@ -1274,7 +1271,7 @@ mod tests {
             ..loaded
         };
         let db = Db::open(&dir.join("m.db")).expect("db");
-        let mcp = Arc::new(Mcp::connect(&std::collections::BTreeMap::new()).await);
+        let mcp = Arc::new(Mcp::connect(&std::collections::BTreeMap::new(), None).await);
         let mut agent = Agent::new(config, db, mcp, "test").await.expect("agent");
         let prompt = format!(
             "I am Sam. Read {} and tell me the secret word.",

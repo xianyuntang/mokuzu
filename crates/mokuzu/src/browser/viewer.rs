@@ -1,38 +1,18 @@
-//! Live view of mokuzu's Chrome for the user: a small web page on the local network that shows
-//! a tab and passes clicks, scrolling, and typing back to it, for the steps a page wants a person
-//! for (a captcha, a sign-in, a code). The link carries a random token; without it every request
-//! is refused.
+//! Live view of the virtual desktop for the user to watch: a small web page on the local network
+//! that shows the whole desktop (see `DESKTOP`). Nothing done there reaches the browsers on it. The link carries a random token; without it every request is refused.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, UdpSocket};
+use std::process::Stdio;
 
-use anyhow::{Context, Result, anyhow, bail};
-use base64::Engine as _;
-use chromiumoxide::cdp::browser_protocol::input::{
-    DispatchKeyEventType, DispatchMouseEventType, InsertTextParams,
-};
-use chromiumoxide::cdp::browser_protocol::page::{
-    EventScreencastFrame, ScreencastFrameAckParams, StartScreencastFormat, StartScreencastParams,
-    StopScreencastParams,
-};
-use chromiumoxide::page::Page;
-use futures::StreamExt;
+use anyhow::{Context, Result, bail};
 use reqwest::Url;
-use serde::Deserialize;
-use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::OnceCell;
 
-use super::{LOAD_LIMIT, REQUEST_TIMEOUT, SESSION, evaluate, key_event, mouse, random, send_key};
-
-/// Largest request body taken, enough for a pasted paragraph.
-const MAX_BODY: usize = 64 * 1024;
-
-/// Tabs the viewer can show, copied from the session after every browser call, so the viewer
-/// keeps working while a call holds the session waiting on a confirm.
-pub(super) static TABS: std::sync::Mutex<Vec<(u32, Page)>> = std::sync::Mutex::new(Vec::new());
+use super::{random, screen};
 
 /// The viewer's link, starting it on first use; it then serves until mokuzu exits.
 // ponytail: never stops once started; stop it with the session if an open port bothers anyone.
@@ -87,42 +67,33 @@ async fn serve(connection: TcpStream, token: &str) -> Result<()> {
     let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
         bail!("bad request line {line:?}");
     };
-    let mut length = 0;
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header).await? == 0 || header.trim_end().is_empty() {
             break;
         }
-        if let Some((name, value)) = header.split_once(':')
-            && name.eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse()?;
-        }
     }
-    if length > MAX_BODY {
-        bail!("request body of {length} bytes");
-    }
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).await?;
 
     let url = Url::parse(&format!("http://viewer{target}"))?;
     let query: HashMap<_, _> = url.query_pairs().collect();
     let allowed = query
         .get("token")
         .is_some_and(|given| same(given.as_bytes(), token.as_bytes()));
-    let tab = query.get("tab").and_then(|tab| tab.parse().ok());
-    if allowed && method == "GET" && url.path() == "/stream" {
-        return stream(&page(tab)?, &mut write).await;
-    }
+    let display = screen().await;
     let (status, kind, content) = if allowed {
-        match respond(method, url.path(), tab, &body).await {
-            Ok(Some(reply)) => reply,
-            Ok(None) => ("404 Not Found", "text/plain", b"not found".to_vec()),
-            Err(err) => (
-                "500 Internal Server Error",
+        match (method, url.path(), display) {
+            ("GET", "/stream", Some(display)) => return stream(&display, &mut write).await,
+            ("GET", "/stream", None) => (
+                "503 Service Unavailable",
                 "text/plain",
-                format!("{err:#}").into_bytes(),
+                b"no virtual desktop".to_vec(),
             ),
+            ("GET", "/", _) => (
+                "200 OK",
+                "text/html; charset=utf-8",
+                PAGE.as_bytes().to_vec(),
+            ),
+            _ => ("404 Not Found", "text/plain", b"not found".to_vec()),
         }
     } else {
         (
@@ -141,75 +112,45 @@ async fn serve(connection: TcpStream, token: &str) -> Result<()> {
     Ok(())
 }
 
-type Reply = (&'static str, &'static str, Vec<u8>);
-
-async fn respond(method: &str, path: &str, tab: Option<u32>, body: &[u8]) -> Result<Option<Reply>> {
-    let ok = "200 OK";
-    Ok(Some(match (method, path) {
-        ("GET", "/") => (ok, "text/html; charset=utf-8", PAGE.as_bytes().to_vec()),
-        ("GET", "/tabs") => (
-            ok,
-            "application/json",
-            tabs().await.to_string().into_bytes(),
-        ),
-        ("POST", "/input") => {
-            let input: Input = serde_json::from_slice(body).context("bad input")?;
-            apply(&page(tab)?, input).await?;
-            (ok, "text/plain", Vec::new())
-        }
-        _ => return Ok(None),
-    }))
-}
-
-/// Streams `page` as MJPEG until the viewer goes. Chrome pushes a frame whenever the page
-/// repaints, so the picture follows input without polling.
-// ponytail: one screencast per tab; a second viewer on the same tab stops the first one's
-// when it leaves. Track viewers per tab if two people ever watch at once.
-async fn stream(page: &Page, write: &mut OwnedWriteHalf) -> Result<()> {
+/// Streams the whole `display` as MJPEG until the viewer goes, a few frames a second.
+async fn stream(display: &str, write: &mut OwnedWriteHalf) -> Result<()> {
+    let mut ffmpeg = tokio::process::Command::new("ffmpeg")
+        .args([
+            "-loglevel",
+            "error",
+            "-f",
+            "x11grab",
+            "-framerate",
+            "5",
+            "-i",
+            display,
+        ])
+        .args([
+            "-q:v",
+            "8",
+            "-f",
+            "mpjpeg",
+            "-boundary_tag",
+            "frame",
+            "-flush_packets",
+            "1",
+        ])
+        .arg("-")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("failed to run ffmpeg")?;
+    let mut frames = ffmpeg.stdout.take().context("ffmpeg has no output")?;
     write
         .write_all(
             b"HTTP/1.1 200 OK\r\ncontent-type: multipart/x-mixed-replace; boundary=frame\r\n\
               cache-control: no-store\r\nconnection: close\r\n\r\n",
         )
         .await?;
-    // The page as it is now: Chrome sends nothing until it next repaints.
-    frame(write, &super::shot(page).await?).await?;
-    let mut frames = page.event_listener::<EventScreencastFrame>().await?;
-    let (width, height) = point(page, 0.75, 0.75).await?;
-    let start = StartScreencastParams::builder()
-        .format(StartScreencastFormat::Jpeg)
-        // Smaller frames: on a Pi without a GPU, encoding them is most of each frame's cost.
-        .quality(50)
-        .max_width(width as i64)
-        .max_height(height as i64)
-        .build();
-    page.execute(start).await?;
-    let streamed = async {
-        while let Some(event) = frames.next().await {
-            // Acked on arrival, so Chrome renders the next frame while this one is sent. A slow
-            // viewer still holds Chrome back: the next frame is not read, so not acked, until
-            // this one is written.
-            page.execute(ScreencastFrameAckParams::new(event.session_id))
-                .await?;
-            let jpeg = base64::engine::general_purpose::STANDARD
-                .decode(AsRef::<str>::as_ref(&event.data))?;
-            frame(write, &jpeg).await?;
-        }
-        Ok(())
-    }
-    .await;
-    let _ = page.execute(StopScreencastParams::default()).await;
-    streamed
-}
-
-async fn frame(write: &mut OwnedWriteHalf, jpeg: &[u8]) -> Result<()> {
-    let head = format!(
-        "--frame\r\ncontent-type: image/jpeg\r\ncontent-length: {}\r\n\r\n",
-        jpeg.len()
-    );
-    write.write_all(head.as_bytes()).await?;
-    write.write_all(jpeg).await?;
-    write.write_all(b"\r\n").await?;
+    // Ends when the viewer goes and a write fails; dropping `ffmpeg` then kills it.
+    tokio::io::copy(&mut frames, write).await?;
     Ok(())
 }
 
@@ -221,122 +162,6 @@ fn same(given: &[u8], expected: &[u8]) -> bool {
             .zip(expected)
             .fold(0, |diff, (a, b)| diff | (a ^ b))
             == 0
-}
-
-/// Open tabs with titles; first syncs with Chrome when no browser call is running, so popups
-/// the user opened here show up.
-async fn tabs() -> Value {
-    if let Ok(mut session) = SESSION.try_lock()
-        && let Some(session) = session.as_mut()
-        && tokio::time::timeout(REQUEST_TIMEOUT, session.refresh())
-            .await
-            .is_ok_and(|refreshed| refreshed.is_ok())
-    {
-        publish(&session.tabs);
-    }
-    let tabs = TABS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut list = Vec::new();
-    for (id, page) in tabs {
-        let title = page.get_title().await.ok().flatten().unwrap_or_default();
-        let url = page.url().await.ok().flatten().unwrap_or_default();
-        list.push(json!({"id": id, "title": title, "url": url}));
-    }
-    Value::Array(list)
-}
-
-pub(super) fn publish(tabs: &[(u32, Page)]) {
-    *TABS.lock().unwrap_or_else(|e| e.into_inner()) = tabs.to_vec();
-}
-
-fn page(tab: Option<u32>) -> Result<Page> {
-    let tab = tab.context("`tab` is required")?;
-    TABS.lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find(|(id, _)| *id == tab)
-        .map(|(_, page)| page.clone())
-        .with_context(|| format!("no tab {tab}"))
-}
-
-/// What the user did on the page. Positions are fractions of the shown screenshot.
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
-enum Input {
-    Click { x: f64, y: f64 },
-    Wheel { x: f64, y: f64, dy: f64 },
-    Key { key: String },
-    Text { text: String },
-    Goto { url: String },
-    Back,
-}
-
-async fn apply(page: &Page, input: Input) -> Result<()> {
-    match input {
-        Input::Click { x, y } => {
-            let at = point(page, x, y).await?;
-            mouse(page, DispatchMouseEventType::MouseMoved, at, None).await?;
-            mouse(page, DispatchMouseEventType::MousePressed, at, Some(1)).await?;
-            mouse(page, DispatchMouseEventType::MouseReleased, at, Some(0)).await?;
-        }
-        Input::Wheel { x, y, dy } => super::wheel(page, point(page, x, y).await?, dy).await?,
-        Input::Key { key } => {
-            let Some((code, virtual_key)) = special_key(&key) else {
-                return Ok(());
-            };
-            let mut down = key_event(DispatchKeyEventType::RawKeyDown, &key, code, virtual_key, 0);
-            if key == "Enter" {
-                down =
-                    key_event(DispatchKeyEventType::KeyDown, &key, code, virtual_key, 0).text("\r");
-            }
-            send_key(page, down).await?;
-            send_key(
-                page,
-                key_event(DispatchKeyEventType::KeyUp, &key, code, virtual_key, 0),
-            )
-            .await?;
-        }
-        Input::Text { text } => {
-            page.execute(InsertTextParams::new(text)).await?;
-        }
-        Input::Goto { url } => {
-            let url = Url::parse(url.trim()).context("not a valid URL")?;
-            if !matches!(url.scheme(), "http" | "https") {
-                bail!("only http and https URLs can be opened");
-            }
-            tokio::time::timeout(LOAD_LIMIT, page.goto(url.as_str()))
-                .await
-                .map_err(|_| anyhow!("the page did not finish loading"))??;
-        }
-        Input::Back => {
-            let _: bool = evaluate(page, "history.back(); return true;").await?;
-        }
-    }
-    Ok(())
-}
-
-/// The viewport position at fractions `x`, `y` of it.
-async fn point(page: &Page, x: f64, y: f64) -> Result<(f64, f64)> {
-    let size: Vec<f64> = evaluate(page, "return [innerWidth, innerHeight];").await?;
-    let [width, height] = size[..] else {
-        bail!("the page reported no size");
-    };
-    Ok((x.clamp(0.0, 1.0) * width, y.clamp(0.0, 1.0) * height))
-}
-
-/// The `code` and Windows virtual key of keys that do something besides typing a character.
-fn special_key(key: &str) -> Option<(&'static str, i64)> {
-    Some(match key {
-        "Enter" => ("Enter", 13),
-        "Backspace" => ("Backspace", 8),
-        "Tab" => ("Tab", 9),
-        "Escape" => ("Escape", 27),
-        "Delete" => ("Delete", 46),
-        "ArrowLeft" => ("ArrowLeft", 37),
-        "ArrowUp" => ("ArrowUp", 38),
-        "ArrowRight" => ("ArrowRight", 39),
-        "ArrowDown" => ("ArrowDown", 40),
-        _ => return None,
-    })
 }
 
 const PAGE: &str = r#"<!doctype html>
@@ -377,36 +202,14 @@ const PAGE: &str = r#"<!doctype html>
     letter-spacing: -.01em; white-space: nowrap; padding-right: var(--space-2); }
   svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round; flex: none; }
-  input, select, button { font: inherit; color: inherit; height: var(--control); min-width: 0;
-    border-radius: var(--radius); border: 1px solid var(--muted); background: var(--background);
-    padding: 0 var(--space-3); transition: border-color var(--fast), opacity var(--fast); }
-  input::placeholder { color: var(--muted-foreground); }
-  input:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--border); }
-  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
-  #url { font-family: var(--mono); font-size: 13px; }
-  button { cursor: pointer; padding: 0; width: var(--control); flex: none; display: inline-grid;
-    place-items: center; }
-  button:hover:not(:disabled) { border-color: var(--border); }
-  button:active:not(:disabled) { opacity: .7; }
-  select { cursor: pointer; max-width: 30%; }
   :disabled { opacity: .4; cursor: not-allowed; }
   .grow { flex: 1; }
   main { flex: 1; min-height: 0; position: relative; }
   /* Pinned to main's box so the picture shrinks to fit it whatever its shape. */
   .stage { position: absolute; inset: var(--space-4); display: flex; align-items: center;
     justify-content: center; padding-bottom: env(safe-area-inset-bottom); }
-  /* Takes the keys typed on the picture, so input methods, pasting, and phone keyboards work.
-     It sits where the user clicked, so an input method's candidates show up there, and is only
-     seen while composing. */
-  #keys { position: fixed; left: 0; top: 0; width: 1px; height: 1.5em; padding: 0 var(--space-1);
-    resize: none; overflow: hidden; white-space: nowrap; border: 0; outline: 0; opacity: 0;
-    pointer-events: none; font: 16px var(--font); color: var(--foreground); background: var(--card);
-    border-radius: 4px; }
-  #keys.composing { opacity: 1; width: auto; min-width: 2em; field-sizing: content;
-    box-shadow: 0 0 0 2px var(--ring); }
-  main:focus-within #screen { outline: 2px solid var(--ring); outline-offset: 3px; }
   #screen { display: block; max-width: 100%; max-height: 100%; border-radius: var(--radius);
-    border: 1px solid var(--muted); box-shadow: var(--shadow); cursor: pointer; background: var(--card); }
+    border: 1px solid var(--muted); box-shadow: var(--shadow); background: var(--card); }
   #screen[hidden], #empty[hidden] { display: none; }
   #empty { text-align: center; color: var(--muted-foreground); max-width: 340px; }
   #empty svg { width: 32px; height: 32px; stroke-width: 1.5; margin-bottom: var(--space-3); }
@@ -421,117 +224,46 @@ const PAGE: &str = r#"<!doctype html>
   .pill[data-state="error"] { --state: var(--destructive); }
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
   /* Fingers need bigger targets, and iOS zooms into fields with text under 16px. */
-  @media (pointer: coarse) { :root { --control: 44px; } input, select, button { font-size: 16px; } }
   @media (max-width: 600px) {
     header { flex-wrap: wrap; }
     .brand { display: none; }
-    select { max-width: none; flex: 1; order: 1; }
     .pill { order: 1; }
-    #url { order: 2; flex-basis: 100%; }
     .stage { inset: var(--space-2); }
   }
 </style>
 <header>
   <span class="brand"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/></svg>mokuzu</span>
-  <button id="back" title="Back" aria-label="Back"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg></button>
-  <select id="tab" aria-label="Tab"></select>
-  <input id="url" class="grow" placeholder="Enter a URL to open in this tab" inputmode="url"
-    autocomplete="off" spellcheck="false" aria-label="URL">
+  <span class="grow"></span>
   <span id="status" class="pill" data-state="wait" role="status" aria-atomic="true">Connecting</span>
 </header>
 <main><div class="stage">
-  <img id="screen" alt="Live view of the browser tab; click it to use the page, then type" hidden>
+  <img id="screen" alt="Live view of mokuzu's desktop" hidden>
   <div id="empty">
     <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
     <strong id="empty-title">Connecting to mokuzu…</strong>
     <span id="empty-text"></span>
   </div>
-</div>
-<textarea id="keys" aria-label="Typing goes to the page" autocomplete="off" autocapitalize="off"
-  autocorrect="off" spellcheck="false" rows="1"></textarea></main>
+</div></main>
 <script>
 const token = new URLSearchParams(location.search).get('token');
-const api = (path, tab) => `${path}?token=${token}` + (tab == null ? '' : `&tab=${tab}`);
 const $ = id => document.getElementById(id);
-let tab = null, list = [];
 const status = (text, state) => { $('status').textContent = text; $('status').dataset.state = state; };
-function empty(title, text) {
-  $('screen').hidden = true; $('screen').removeAttribute('src');
-  $('empty').hidden = false; $('empty-title').textContent = title; $('empty-text').textContent = text || '';
-}
 
-async function tabs() {
-  list = await (await fetch(api('/tabs'))).json();
-  const shown = tab;
-  if (!list.some(t => t.id === tab)) tab = list.at(-1)?.id ?? null;
-  $('tab').replaceChildren(...list.map(t => new Option(t.title || 'Untitled', t.id, false, t.id === tab)));
-  for (const id of ['tab', 'back', 'url']) $(id).disabled = !list.length;
-  const current = list.find(t => t.id === tab);
-  if (current && document.activeElement !== $('url')) $('url').value = current.url;
-  if (tab !== shown) show();
-}
-$('tab').onchange = () => { tab = Number($('tab').value); show(); tabs().catch(() => {}); };
-
-// One at a time, so keys typed quickly reach the page in order.
-let queue = Promise.resolve(true);
-function send(input) {
-  const target = tab;
-  queue = queue.catch(() => false).then(async () => {
-    if (target == null) return false;
-    const reply = await fetch(api('/input', target), { method: 'POST', body: JSON.stringify(input) });
-    if (!reply.ok) status(await reply.text(), 'error');
-    return reply.ok;
-  });
-  return queue;
-}
-
-// Chrome pushes a frame on every repaint over one long response the browser shows as it comes.
+// One long response the browser shows frame by frame. Shown at once rather than on `load`,
+// which browsers fire unevenly for a stream of frames.
 function show() {
-  if (tab == null) {
-    status('No tab', 'wait');
-    return empty('No tab open', 'When mokuzu opens a page, it shows up here and you can click and type in it.');
-  }
-  // Shown at once rather than on `load`, which browsers fire unevenly for a stream of frames.
-  $('screen').src = api('/stream', tab);
+  $('screen').src = `/stream?token=${token}&t=${Date.now()}`;
   $('screen').hidden = false; $('empty').hidden = true; status('Live', 'live');
 }
 $('screen').onerror = () => {
-  if (tab == null) return;
-  empty('Reconnecting…', 'The tab stopped sending pictures; trying again.');
-  status('Reconnecting', 'error');
-  setTimeout(() => tabs().then(show).catch(() => {}), 1000);
+  $('screen').hidden = true; $('screen').removeAttribute('src'); $('empty').hidden = false;
+  $('empty-title').textContent = 'Nothing to show';
+  $('empty-text').textContent = 'mokuzu shows its virtual desktop, run on Linux without a screen '
+    + 'with Xvfb and ffmpeg installed, or mokuzu stopped. Trying again.';
+  status('Waiting', 'wait');
+  setTimeout(show, 3000);
 };
-
-const at = e => { const r = $('screen').getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height }; };
-const keys = $('keys');
-$('screen').addEventListener('click', e => {
-  send({ kind: 'click', ...at(e) });
-  keys.style.left = `${e.clientX}px`; keys.style.top = `${e.clientY}px`;
-  keys.focus({ preventScroll: true });
-});
-$('screen').addEventListener('wheel', e => { e.preventDefault(); send({ kind: 'wheel', ...at(e), dy: e.deltaY }); }, { passive: false });
-const SPECIAL = new Set(['Enter', 'Backspace', 'Tab', 'Escape', 'Delete', 'ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown']);
-keys.addEventListener('keydown', e => {
-  if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey || !SPECIAL.has(e.key)) return;
-  e.preventDefault();
-  send({ kind: 'key', key: e.key });
-});
-// Typed characters, pasted text, and finished compositions all land here first.
-function flush() { if (keys.value) { send({ kind: 'text', text: keys.value }); keys.value = ''; } }
-keys.addEventListener('input', e => { if (!e.isComposing) flush(); });
-keys.addEventListener('compositionstart', () => keys.classList.add('composing'));
-keys.addEventListener('compositionend', () => { keys.classList.remove('composing'); flush(); });
-$('url').addEventListener('keydown', e => {
-  if (e.key !== 'Enter' || e.isComposing) return;
-  let url = $('url').value.trim();
-  if (url && !/^https?:\/\//i.test(url)) url = 'https://' + url;
-  status('Opening', 'wait');
-  send({ kind: 'goto', url }).then(ok => { if (ok) { status('Live', 'live'); $('url').blur(); } });
-});
-$('back').onclick = () => send({ kind: 'back' });
-setInterval(() => tabs().catch(() => status('Offline', 'error')), 3000);
-tabs().then(() => { if (tab == null) show(); })
-  .catch(() => { status('Offline', 'error'); empty('Cannot reach mokuzu', 'Check that mokuzu is still running, then reload.'); });
+show();
 </script>
 </html>
 "#;
@@ -555,9 +287,9 @@ mod tests {
         let page = client.get(&link).send().await.expect("page");
         assert_eq!(page.status(), 200);
         assert!(page.text().await.expect("body").contains("mokuzu browser"));
-        let tabs = link.replace("/?", "/tabs?");
-        let tabs = client.get(&tabs).send().await.expect("tabs");
-        assert_eq!(tabs.text().await.expect("body"), "[]");
+        let stream = link.replace("/?", "/stream?");
+        let stream = client.get(&stream).send().await.expect("stream");
+        assert_eq!(stream.status(), 503, "no desktop started");
         let base = link.split('?').next().expect("base");
         let refused = client.get(base).send().await.expect("refused");
         assert_eq!(refused.status(), 403);

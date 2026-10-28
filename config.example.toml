@@ -82,9 +82,9 @@ level = "warn"
 # [database]
 # path = "/Users/you/.local/share/mokuzu/mokuzu.db"
 
-# Optional. The Chrome the `browser` tool drives.
+# Optional. The virtual desktop MCP servers' browsers draw on, and its live view.
 # [browser]
-# # Screen size in pixels when no monitor is plugged in (Xvfb or headless); default 1280x800.
+# # Desktop size in pixels when no monitor is plugged in (Xvfb); default 1280x800.
 # # Larger makes screenshots and the /browser live view sharper.
 # width = 1920
 # height = 1080

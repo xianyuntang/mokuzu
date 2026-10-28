@@ -86,7 +86,8 @@ pub async fn serve(config: Config) -> Result<()> {
     let intents = GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
-    let mcp = Arc::new(Mcp::connect(&config.mcp).await);
+    let display = crate::browser::desktop(config.browser_screen).await;
+    let mcp = Arc::new(Mcp::connect(&config.mcp, display.as_deref()).await);
     let token = discord.token.as_str().to_owned();
     let handler = Handler {
         mcp: Arc::clone(&mcp),
@@ -550,9 +551,8 @@ impl EventHandler for Handler {
                     )
                     .required(true),
                 ),
-            CreateCommand::new("browser").description(
-                "Get a link to a live view of mokuzu's browser, to click and type in it",
-            ),
+            CreateCommand::new("browser")
+                .description("Get a link to a live view of mokuzu's browser"),
         ];
         if let Err(err) = Command::set_global_commands(&ctx.http, commands).await {
             tracing::warn!("failed to register slash commands: {err:#}");

@@ -11,9 +11,8 @@ servers such as Linear, and runs scheduled jobs.
 The name is モクズ (mokuzu), from モクズガニ, the Japanese mitten crab; its hairy claws look like
 they hold a tuft of seaweed scraps (藻屑).
 
-Mokuzu's own tools only read. Anything that changes something (an MCP call, a settings change,
-or using a site in the browser for the first time) asks you first, or goes past a reviewer model
-in auto mode.
+Mokuzu's own tools only read. Anything that changes something (an MCP call or a settings
+change) asks you first, or goes past a reviewer model in auto mode.
 
 ## Install
 
@@ -59,7 +58,7 @@ mokuzu             # chat in the terminal
 `~/.config/mokuzu/config.toml`. The provider is OpenCode Go, or Anthropic's API for Claude with an
 Anthropic API key. Only the **Model** page is required.
 
-In the terminal chat, `/cast <request>` sends out a cast of crabs (see `cast_crabs` under Tools), `/browser` gives a link to a live view of the browser, and `/exit` (or Ctrl-C) quits.
+In the terminal chat, `/cast <request>` sends out a cast of crabs (see `cast_crabs` under Tools), `/browser` gives a link to a live view of mokuzu's desktop (see [Browser](#browser)), and `/exit` (or Ctrl-C) quits.
 Conversations are saved, so the next `mokuzu` picks up where you left off.
 
 ## Discord
@@ -94,7 +93,7 @@ How it behaves:
   Idle threads archive after an hour.
 - Each person has their own memory, shared by all of their threads and DMs; the terminal has one
   of its own. Messages from different people are never merged into one turn.
-- 👀 means received, ✅ done, ❌ failed. `/cast <request>` sends out a cast of crabs, and `/browser` gives a link to a live view of the browser. Both show up in Discord's `/` menu, and typing them as text works too.
+- 👀 means received, ✅ done, ❌ failed. `/cast <request>` sends out a cast of crabs, and `/browser` gives a link to a live view of mokuzu's desktop. Both show up in Discord's `/` menu, and typing them as text works too.
 - Messages sent in quick succession, or while mokuzu is still answering, are merged and answered
   once.
 - Images, text files (including the `message.txt` Discord makes from a long paste), and PDF,
@@ -129,7 +128,6 @@ Logs:
 | --- | --- | --- |
 | `read_file`, `list_dir` | Reads files, including the text of PDF, `.docx`, and `.pptx` documents up to 20 MB, and lists directories. Hidden paths (like `~/.ssh` or `.env`) and Mokuzu's own config and database are refused. | No |
 | `fetch_url` | Reads a web page as text, optionally rendered in headless Chrome, or a linked PDF, `.docx`, or `.pptx` document up to 20 MB; a PDF's first 3 pages also come as images. Private network addresses are refused. | No |
-| `browser` | Drives a Chrome window with its own profile in `~/.local/share/mokuzu/chrome`, so sites you sign in to there stay signed in. Lists tabs, opens pages, reads a tab as text with each control numbered, clicks, types, scrolls, takes screenshots, and runs JavaScript against a tab's DOM (for controls only a script makes clickable). Chrome runs without its automation flags, headful on a plugged-in screen, or on a virtual Xvfb screen when there is none (install `xvfb`; without it Chrome runs headless, which sites detect more easily); `[browser]` `width` and `height` set that screen's size (default 1280x800), and stays open between runs. At most 5 tabs stay open; opening another closes the one used longest ago. Close other Chrome windows on that profile before mokuzu starts it. When a page needs you (a captcha, a sign-in), mokuzu asks you to send `/browser`, which replies with a link to a live view of the browser, on your local network (port 22050, or `[browser]` `viewer_port`), where you click and type yourself. | Opening a page, clicking, typing, or running a script on a site for the first time. Approving approves the site (and its subdomains) for good; after that nothing on it asks. The list is in `~/.local/share/mokuzu/browser-sites` |
 | `view_pdf` | Shows the model pages of a local or linked PDF as images, up to 10 per call, for layout, tables, figures, and scans that the text misses. Same path and address rules as `read_file` and `fetch_url`. | No |
 | `send_file` | Discord only. Sends a local file or a downloaded one (under 3 MB) as an attachment, e.g. an image the user asked to see. Same path and address rules as `read_file` and `fetch_url`. | No |
 | `web_search` | Searches through your SearXNG instance or the Brave Search API (pick one in `mokuzu configure`), optionally only recent results (`time_range`), news sites (`category`), or a date span (`after`, `before`; on SearXNG only Google engines honor it). Results show their publish date when known. | No |
@@ -163,6 +161,28 @@ approve = true   # the default: ask before each call
 
 Servers connect once at startup and are shared by every conversation. Restart after changing
 them.
+
+### Browser
+
+Mokuzu has no browser of its own; give it one over MCP. [invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp)
+drives a Firefox patched so sites see an ordinary browser, and keeps sign-ins in a profile:
+
+```sh
+uvx --from invisible-playwright invisible-playwright fetch   # downloads its Firefox once
+```
+
+```toml
+[mcp.servers.stealth]
+command = "uvx"
+args = ["invisible-playwright-mcp"]
+env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/home/you/.local/share/mokuzu/stealthfox" }
+```
+
+On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
+MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
+`/browser` replies with a link to a live view of that desktop on your local network (port 22050,
+or `[browser]` `viewer_port`), to watch; nothing done there reaches the browser. The view needs
+`ffmpeg`. `[browser]` `width` and `height` set the desktop's size (default 1280x800).
 
 ## Approval
 
