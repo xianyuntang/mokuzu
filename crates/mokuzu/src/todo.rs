@@ -155,6 +155,10 @@ pub fn describe(edit: &Edit, todos: &[Todo]) -> String {
     }
 }
 
+/// The todo tool's result on a heartbeat run.
+pub const HEARTBEAT_SAVED: &str = "saved. Once every todo is checked, reply with what the user \
+     needs to know, or exactly NO_REPLY if nothing.";
+
 /// What the model is told on a heartbeat run over `todos`, all written in one conversation.
 pub fn heartbeat_prompt(todos: &[Todo], now: DateTime<Tz>) -> String {
     let list: Vec<String> = todos.iter().map(line).collect();
@@ -185,7 +189,7 @@ enum Held {
 }
 
 /// Wraps `inner`, holding back replies and notes until `finish`, which drops them all when the
-/// last reply is `SILENT`. Approvals and files go straight through.
+/// last reply is `SILENT` or there is none. Approvals and files go straight through.
 pub struct Quiet<'a, I> {
     inner: &'a mut I,
     held: Vec<Held>,
@@ -199,13 +203,14 @@ impl<'a, I: Io> Quiet<'a, I> {
         }
     }
 
-    /// Posts what was held unless the last reply is `SILENT`; true if it posted.
+    /// Posts what was held unless there is no reply or the last one is `SILENT`; true if it
+    /// posted.
     pub async fn finish(self) -> Result<bool> {
         let last_reply = self.held.iter().rev().find_map(|held| match held {
             Held::Say(text) => Some(text.as_str()),
             _ => None,
         });
-        if last_reply.is_some_and(is_silent) {
+        if last_reply.is_none_or(is_silent) {
             return Ok(false);
         }
         for held in self.held {
@@ -333,6 +338,11 @@ mod tests {
         let mut quiet = Quiet::new(&mut seen);
         quiet.note("📝 todo updated: x").await.expect("note");
         quiet.say(" NO_REPLY ").await.expect("say");
+        assert!(!quiet.finish().await.expect("finish"));
+        assert!(seen.0.is_empty());
+
+        let mut quiet = Quiet::new(&mut seen);
+        quiet.note("📝 todo updated: x").await.expect("note");
         assert!(!quiet.finish().await.expect("finish"));
         assert!(seen.0.is_empty());
 

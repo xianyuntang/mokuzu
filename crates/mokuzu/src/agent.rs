@@ -532,6 +532,10 @@ impl Agent {
             .save_todo(self.user, self.posts_to.clone(), edit)
             .await?;
         io.note(&note).await?;
+        // Models tend to end a heartbeat silently after the last edit, so remind them here.
+        if self.key.starts_with("heartbeat:") {
+            return Ok(todo::HEARTBEAT_SAVED.to_owned());
+        }
         Ok("saved".to_owned())
     }
 
@@ -953,6 +957,7 @@ impl Agent {
             .chain(chats(&self.key).then(files::send_tool))
             .chain(self.mcp.tools().iter().cloned())
             .collect();
+        let mut ran_tools = false;
         loop {
             let response = self
                 .model
@@ -967,7 +972,12 @@ impl Agent {
                 _ => {}
             }
             if response.choice.is_empty() {
-                bail!("the model returned an empty response");
+                // After tool calls, some models end the turn with no content: nothing more to say.
+                if !ran_tools {
+                    bail!("the model returned an empty response");
+                }
+                self.messages.push(Message::assistant("[no reply]"));
+                return Ok(());
             }
 
             let mut calls: Vec<ToolCall> = Vec::new();
@@ -988,6 +998,7 @@ impl Agent {
             if calls.is_empty() {
                 return Ok(());
             }
+            ran_tools = true;
 
             let mut results = Vec::new();
             // Images can't go inside a tool result on every provider, so they follow the results.
