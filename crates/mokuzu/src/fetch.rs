@@ -1,19 +1,11 @@
-//! `fetch_url` tool: reads a public web page as plain text, optionally rendered in headless Chrome
-//! so JavaScript runs. It runs without approval, so it refuses private, loopback, and link-local
-//! addresses, including via DNS, redirects, and requests made by the page's scripts.
+//! `fetch_url` tool: reads a public web page as plain text. It runs without approval, so it
+//! refuses private, loopback, and link-local addresses, including via DNS and redirects.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
-use chromiumoxide::browser::{Browser, BrowserConfig};
-use chromiumoxide::cdp::browser_protocol::fetch::{
-    ContinueRequestParams, EventRequestPaused, FailRequestParams,
-};
-use chromiumoxide::cdp::browser_protocol::network::{ErrorReason, ResourceType};
-use futures::StreamExt;
+use anyhow::{Context, Result, bail};
 use reqwest::Url;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::CONTENT_TYPE;
@@ -33,20 +25,8 @@ const MAX_CHARS: usize = 15_000;
 const MAX_REDIRECTS: usize = 5;
 /// Wrap width for rendered HTML.
 const WIDTH: usize = 100;
-/// Whole budget for a headless render: launch, load, and settle.
-const RENDER_TIMEOUT: Duration = Duration::from_secs(40);
-/// Longest a render may take in all, launch and cleanup included, in case Chrome hangs outside
-/// the steps `RENDER_TIMEOUT` covers.
-const RENDER_LIMIT: Duration = Duration::from_secs(90);
-/// How long closing Chrome may take before it is left to be killed on drop.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Extra wait after the load event for scripts that fill the page late.
-// ponytail: fixed settle time; wait on network idle if pages come back half-filled.
-const SETTLE: Duration = Duration::from_secs(2);
 /// A fetched page: final URL, text, and a PDF's preview note and page images.
 type Fetched = (String, String, Option<(String, Vec<Image>)>);
-/// Makes each render's throwaway Chrome profile directory unique.
-static RENDERS: AtomicUsize = AtomicUsize::new(0);
 
 pub fn tool() -> ToolDefinition {
     ToolDefinition {
@@ -54,10 +34,8 @@ pub fn tool() -> ToolDefinition {
         description: format!(
             "Read a public web page (http or https) as plain text, e.g. a search result, docs page, or \
              article. Returns up to {MAX_CHARS} characters; for longer pages, call again with the \
-             `offset` it gives you. Set `render` to load it in a headless browser so JavaScript runs. \
-             It is slower, so start without it, but when a plain fetch fails (e.g. HTTP 403), comes \
-             back empty or nearly so, or asks for JavaScript, retry once with `render`. If that fails \
-             too, or the page needs a sign-in, open it with a browser tool if you have one, \
+             `offset` it gives you. When it fails (e.g. HTTP 403), comes back empty or nearly so, asks \
+             for JavaScript, or needs a sign-in, open the page with a browser tool if you have one, \
              instead of giving up. Private and local network addresses are refused."
         ),
         parameters: json!({
@@ -67,10 +45,6 @@ pub fn tool() -> ToolDefinition {
                 "offset": {
                     "type": "integer",
                     "description": "Character offset to continue from, for long pages. Default 0.",
-                },
-                "render": {
-                    "type": "boolean",
-                    "description": "Run the page's JavaScript in headless Chrome first. Default false.",
                 },
             },
             "required": ["url"],
@@ -114,20 +88,7 @@ impl Fetcher {
             .as_u64()
             .and_then(|n| usize::try_from(n).ok())
             .unwrap_or(0);
-        let fetched = if args["render"].as_bool().unwrap_or(false) {
-            tokio::time::timeout(RENDER_LIMIT, render(url))
-                .await
-                .unwrap_or_else(|_| {
-                    Err(anyhow!(
-                        "rendering timed out after {}s",
-                        RENDER_LIMIT.as_secs()
-                    ))
-                })
-                .map(|(final_url, text)| (final_url, text, None))
-        } else {
-            self.fetch(url, offset == 0).await
-        };
-        match fetched {
+        match self.fetch(url, offset == 0).await {
             Ok((final_url, text, preview)) => {
                 let mut out = page(&final_url, &text, offset);
                 let Some((note, images)) = preview else {
@@ -190,122 +151,6 @@ impl Fetcher {
             }
         }
         Ok((final_url, content_type, body))
-    }
-}
-
-/// Loads `url` in a throwaway headless Chrome and returns the final URL and the rendered page as text.
-/// Every request the page makes is checked first: private or local destinations are failed, and so
-/// are images, media, and fonts, which only slow the render down.
-async fn render(url: &str) -> Result<(String, String)> {
-    let url = Url::parse(url).context("not a valid URL")?;
-    check_url(&url)?;
-    if !request_allowed(url.as_str(), &ResourceType::Document).await {
-        bail!("{url} resolves to a private or local address");
-    }
-    let profile = std::env::temp_dir().join(format!(
-        "mokuzu-chrome-{}-{}",
-        std::process::id(),
-        RENDERS.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut config = BrowserConfig::builder()
-        .new_headless_mode()
-        .enable_request_intercept()
-        .user_data_dir(&profile)
-        .launch_timeout(RENDER_TIMEOUT)
-        .request_timeout(RENDER_TIMEOUT);
-    // Chrome refuses to start its sandbox as root, e.g. in a container.
-    if std::env::var("USER").is_ok_and(|user| user == "root") {
-        config = config.no_sandbox();
-    }
-    let config = config.build().map_err(|err| {
-        anyhow!("no Chrome or Chromium found ({err}); install chromium, or set CHROME to its path")
-    })?;
-    let (mut browser, mut handler) = Browser::launch(config)
-        .await
-        .context("failed to start Chrome")?;
-    let driver =
-        tokio::spawn(async move { while handler.next().await.is_some_and(|e| e.is_ok()) {} });
-
-    let rendered = tokio::time::timeout(RENDER_TIMEOUT, async {
-        let page = Arc::new(browser.new_page("about:blank").await?);
-        let mut paused = page.event_listener::<EventRequestPaused>().await?;
-        let guard_page = Arc::clone(&page);
-        let guard = tokio::spawn(async move {
-            while let Some(event) = paused.next().await {
-                let page = Arc::clone(&guard_page);
-                tokio::spawn(async move {
-                    let id = event.request_id.clone();
-                    let sent = if request_allowed(&event.request.url, &event.resource_type).await {
-                        page.execute(ContinueRequestParams::new(id)).await.map(drop)
-                    } else {
-                        let fail = FailRequestParams::new(id, ErrorReason::BlockedByClient);
-                        page.execute(fail).await.map(drop)
-                    };
-                    if let Err(err) = sent {
-                        tracing::debug!("failed to answer a paused request: {err}");
-                    }
-                });
-            }
-        });
-        page.goto(url.as_str()).await?;
-        tokio::time::sleep(SETTLE).await;
-        let html = page.content().await?;
-        let final_url = page.url().await?.unwrap_or_else(|| url.to_string());
-        guard.abort();
-        anyhow::Ok((final_url, html))
-    })
-    .await;
-
-    match tokio::time::timeout(CLOSE_TIMEOUT, browser.close()).await {
-        Ok(Err(err)) => tracing::debug!("failed to close Chrome: {err}"),
-        Err(_) => tracing::warn!("Chrome did not close in time"),
-        Ok(Ok(_)) => {}
-    }
-    let _ = tokio::time::timeout(CLOSE_TIMEOUT, browser.wait()).await;
-    driver.abort();
-    let _ = std::fs::remove_dir_all(&profile);
-    let (final_url, html) = rendered
-        .map_err(|_| anyhow!("rendering timed out after {}s", RENDER_TIMEOUT.as_secs()))?
-        .map_err(|err| {
-            if err.to_string().contains("ERR_BLOCKED_BY_CLIENT") {
-                anyhow!("the page redirected to a private or local address, which is blocked")
-            } else {
-                err.context("rendering failed")
-            }
-        })?;
-    Ok((final_url, to_text("text/html", html.as_bytes())?))
-}
-
-/// Whether headless Chrome may make this request: public http(s), or inline data, and not a
-/// heavy resource type the text doesn't need.
-async fn request_allowed(url: &str, kind: &ResourceType) -> bool {
-    if matches!(
-        kind,
-        ResourceType::Image | ResourceType::Media | ResourceType::Font
-    ) {
-        return false;
-    }
-    let Ok(url) = Url::parse(url) else {
-        return false;
-    };
-    match url.scheme() {
-        "data" | "blob" => true,
-        "http" | "https" => {
-            let Some(host) = url.host_str() else {
-                return false;
-            };
-            if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
-                return is_public(ip);
-            }
-            match tokio::net::lookup_host((host, 0)).await {
-                Ok(addrs) => {
-                    let addrs: Vec<SocketAddr> = addrs.collect();
-                    !addrs.is_empty() && addrs.iter().all(|addr| is_public(addr.ip()))
-                }
-                Err(_) => false,
-            }
-        }
-        _ => false,
     }
 }
 
@@ -407,8 +252,8 @@ fn page(url: &str, text: &str, offset: usize) -> String {
     let total = text.chars().count();
     if total == 0 {
         return format!(
-            "URL: {url}\nThe page has no readable text; it may need JavaScript (try render: true) \
-             or require a login."
+            "URL: {url}\nThe page has no readable text; it may need JavaScript \
+             or a login; try a browser tool."
         );
     }
     if offset >= total && total > 0 {
@@ -458,20 +303,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_guard_blocks_private_hosts_and_heavy_resources() {
-        let doc = ResourceType::Document;
-        assert!(!request_allowed("http://127.0.0.1/", &doc).await);
-        assert!(!request_allowed("http://localhost/", &doc).await);
-        assert!(!request_allowed("http://[fd00::1]/", &doc).await);
-        assert!(!request_allowed("file:///etc/passwd", &doc).await);
-        assert!(!request_allowed("https://1.1.1.1/logo.png", &ResourceType::Image).await);
-        assert!(request_allowed("https://1.1.1.1/", &doc).await);
-        assert!(request_allowed("data:text/plain,hi", &ResourceType::Script).await);
-        let out = render("http://localhost:9/").await.expect_err("blocked");
-        assert!(format!("{out:#}").contains("private or local"), "{out:#}");
-    }
-
-    #[tokio::test]
     async fn hostnames_resolving_to_loopback_are_refused() {
         let fetcher = Fetcher::new().expect("client");
         let out = fetcher.run(&json!({"url": "http://localhost:9/"})).await.0;
@@ -507,6 +338,6 @@ mod tests {
         let rest = page("https://x", &text, MAX_CHARS);
         assert!(rest.ends_with(&"字".repeat(10)));
         assert!(page("https://x", "short", 99).starts_with("error:"));
-        assert!(page("https://x", "", 0).contains("render: true"));
+        assert!(page("https://x", "", 0).contains("browser tool"));
     }
 }

@@ -9,7 +9,6 @@ repository = "https://github.com/xianyuntang/mokuzu"
 [dependencies]
 anyhow = "1.0.104"
 base64 = "0.22"
-chromiumoxide = "0.9.1"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
 croner = "4.0.0"

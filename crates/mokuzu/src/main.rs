@@ -115,11 +115,7 @@ async fn main() -> Result<()> {
     };
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_new(&config.log_level)
-                .context("invalid log.level in config")?
-                // Chrome sends CDP events newer than chromiumoxide's protocol; it skips each one
-                // with a warning that says nothing actionable.
-                .add_directive("chromiumoxide::handler=error".parse()?),
+            EnvFilter::try_new(&config.log_level).context("invalid log.level in config")?,
         )
         .with_writer(writer)
         .with_ansi(command.as_deref() == Some("serve") && std::io::stderr().is_terminal())
