@@ -50,7 +50,7 @@ pub fn show(config: &Config) -> String {
 }
 
 /// Sets `key` to `value` in the config `text`; returns the new text and the config it parses to.
-/// Changing the model also drops `model.api`, so the endpoint format is guessed for the new name.
+/// Changing the model also sets `model.api` to the format guessed for the new name.
 pub fn edit(text: &str, key: &str, value: &Value) -> Result<(String, Config)> {
     if !KEYS.contains(&key) {
         bail!(
@@ -73,6 +73,7 @@ pub fn edit(text: &str, key: &str, value: &Value) -> Result<(String, Config)> {
             .with_context(|| format!("{key} needs a positive integer"))?;
         toml_edit::value(number)
     };
+    let provider = Config::parse(text)?.provider;
     let mut doc: DocumentMut = text.parse().context("config is not valid TOML")?;
     let (sections, field) = key.rsplit_once('.').context("key has no section")?;
     let mut table: &mut dyn TableLike = doc.as_table_mut();
@@ -83,10 +84,12 @@ pub fn edit(text: &str, key: &str, value: &Value) -> Result<(String, Config)> {
             .as_table_like_mut()
             .with_context(|| format!("`{section}` in the config is not a table"))?;
     }
-    table.insert(field, item);
-    if key == "model.name" {
-        table.remove("api");
+    if key == "model.name"
+        && let Some(name) = item.as_str()
+    {
+        table.insert("api", toml_edit::value(provider.api_for(name).name()));
     }
+    table.insert(field, item);
     let text = doc.to_string();
     let config = Config::parse(&text)?;
     Ok((text, config))
@@ -103,7 +106,7 @@ mod tests {
     fn edit_changes_one_key_and_keeps_comments() {
         let (text, config) = edit(BASE, "model.name", &json!("glm-5.3")).expect("valid");
         assert!(text.starts_with("# keep me\n"));
-        assert!(!text.contains("api = "));
+        assert!(text.contains("api = \"openai\""), "{text}");
         assert_eq!(config.model, "glm-5.3");
         assert_eq!(config.api, crate::config::Api::Openai);
 

@@ -56,7 +56,8 @@ mokuzu             # chat in the terminal
 
 `mokuzu configure` asks for your provider, API key, and model and writes
 `~/.config/mokuzu/config.toml`. The provider is OpenCode Go, or Anthropic's API for Claude with an
-Anthropic API key. Only the **Model** page is required.
+Anthropic API key. Each provider keeps its own key, so switching between them never reuses one.
+Only the **Model** page is required.
 
 In the terminal chat, `/cast <request>` sends out a cast of crabs (see `cast_crabs` under Tools), `/browser` gives a link to a live view of mokuzu's desktop (see [Browser](#browser)), and `/exit` (or Ctrl-C) quits.
 Conversations are saved, so the next `mokuzu` picks up where you left off.
@@ -136,7 +137,7 @@ Logs:
 | `todo` | Keeps a todo list per person of things to follow until a condition is met. The agent adds them on its own when it starts something whose outcome isn't in yet (after opening a PR it follows the CI/CD, review, or merge; after a deploy or long job, its end; after sending a message, the reply), or when you ask it to watch something. Under `mokuzu serve`, a heartbeat wakes every 30 minutes for each Discord conversation with open todos, checks them in a fresh conversation, and posts there only when one is met, has failed, or needs you, then marks it done; otherwise it stays silent. No open todos, no model call. Anything at a set time (a reminder in 5 minutes, a task tomorrow) is a `cron` job instead. Todos written in the terminal are not checked by the heartbeat. | No |
 | `search_history` | Searches earlier messages of the same conversation (Discord channel or thread, or the terminal) that are no longer in context because a summary replaced them. Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. | No |
 | `skill` | Loads, saves, or removes skills: saved instructions for recurring tasks, kept in the database, one set per person like memory. Their names and descriptions are listed in each of that person's conversations; the model loads one when a task comes close to one, saves a finished multi-step task as a new one, and updates a skill when following it went wrong or you corrected it. Saving runs without asking and says what it saved. | Remove |
-| `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (default: this machine's; restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). | No |
+| `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). | No |
 | `settings` | Reads or changes the model and a few limits. | Yes |
 | MCP tools | Any tool from the MCP servers you connect. | Yes, per server |
 
@@ -156,7 +157,7 @@ token = "lin_api_..."
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }
-approve = true   # the default: ask before each call
+approve = true   # ask before each call
 ```
 
 Servers connect once at startup and are shared by every conversation. Restart after changing
@@ -182,13 +183,13 @@ On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`)
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
 `/browser` replies with a link to a live view of that desktop on your local network (port 22050,
 or `[browser]` `viewer_port`), to watch; nothing done there reaches the browser. The view needs
-`ffmpeg`. `[browser]` `width` and `height` set the desktop's size (default 1280x800).
+`ffmpeg`. `[browser]` `width` and `height` set the desktop's size.
 
 ## Approval
 
 Every action that needs approval shows you what will run. There are two modes:
 
-- **Ask** (default): you approve each action.
+- **Ask**: you approve each action.
 - **Auto**: a reviewer model reads your request and the proposed action. Reading, and small
   changes you asked for, go ahead with a 🛡️ note. Anything that deletes, publishes, messages
   other people, changes permissions, touches many items, or that the reviewer is unsure about is
@@ -197,7 +198,7 @@ Every action that needs approval shows you what will run. There are two modes:
 ```toml
 [approval]
 mode = "auto"
-model = "glm-5.3-flash"   # optional; defaults to the main model
+model = "glm-5.3-flash"   # the reviewer; can be the main model
 ```
 
 The model cannot turn on auto mode itself; only `mokuzu configure` or the config file can.
@@ -206,8 +207,10 @@ The model cannot turn on auto mode itself; only `mokuzu configure` or the config
 
 Everything lives in `~/.config/mokuzu/config.toml` (or pass `--config PATH`).
 [`config.example.toml`](config.example.toml) documents every option, and `mokuzu configure`
-can set each of them (the less common ones under **Advanced**). MCP servers you added by hand
-are kept as written. Most changes apply from the next
+can set each of them (the less common ones under **Advanced**). The file spells out every
+setting; nothing falls back to a hidden default. Its `version` is the file's format: when an
+update changes the format, mokuzu migrates the file on start, keeping the old one as
+`config.toml.bak`. MCP servers you added by hand are kept as written. Most changes apply from the next
 message; MCP servers, web search, and Discord need a restart.
 
 ## Development

@@ -1,5 +1,6 @@
 //! `mokuzu configure`: a step-by-step, full-screen setup with dropdowns.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -155,6 +156,9 @@ struct Form {
     mcp_names: Vec<String>,
     /// Configured Discord servers, one Keep / Remove row each after the MCP rows.
     guilds: Vec<(u64, config::GuildRule)>,
+    /// API key and base URL of each provider not picked now, so switching providers never
+    /// carries one provider's key over to another, and saving keeps both.
+    keys: BTreeMap<Provider, (String, String)>,
     /// Set once a save was tried, so empty required fields and unfinished steps show as errors.
     attempted: bool,
     /// `NO_COLOR` is set: draw without colors, relying on the ✓ ✗ ● ▌ marks.
@@ -472,6 +476,17 @@ impl Form {
             status: Line::default(),
             mcp_names,
             guilds,
+            keys: current
+                .map(|c| {
+                    c.keys
+                        .iter()
+                        .filter(|(p, _)| *p != provider)
+                        .map(|(p, key)| {
+                            (*p, (key.api_key.as_str().to_owned(), key.base_url.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             attempted: false,
             plain: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
         })
@@ -622,9 +637,18 @@ impl Form {
         }
     }
 
-    /// Points the model and reviewer menus, and a default base URL, at the newly picked provider.
+    /// Points the model and reviewer menus at the newly picked provider, and swaps in its own
+    /// API key and base URL, keeping `from`'s for when it is picked again.
     fn switch_provider(&mut self, from: Provider) {
         let to = self.provider();
+        let left = (self.value(KEY), self.value(BASE_URL));
+        self.keys.insert(from, left);
+        let (key, url) = self
+            .keys
+            .remove(&to)
+            .unwrap_or_else(|| (String::new(), to.default_base_url().to_owned()));
+        self.fields[KEY].value = key;
+        self.fields[BASE_URL].value = url;
         let mut model_options = options(models(to));
         model_options.push(CUSTOM.to_owned());
         self.fields[MODEL].value = model_options[0].clone();
@@ -633,10 +657,6 @@ impl Form {
         reviewers.extend(models(to));
         self.fields[REVIEWER].value = SAME_MODEL.to_owned();
         self.fields[REVIEWER].kind = Kind::Select(options(&reviewers));
-        let url = self.value(BASE_URL);
-        if url.is_empty() || url == from.default_base_url() {
-            self.fields[BASE_URL].value = to.default_base_url().to_owned();
-        }
     }
 
     fn edited(&mut self) {
@@ -721,38 +741,46 @@ impl Form {
         }
     }
 
-    /// The `[model]` and provider settings past name and key; each is `None` when it is the
-    /// default, so the file follows later changes to defaults.
+    /// The `[model]` and provider settings past name and key. A field left empty is written as
+    /// its default, so the file holds every value mokuzu runs with.
     fn model_options(&self) -> std::result::Result<ModelOptions, String> {
         let provider = self.provider();
-        let api = self.value(API);
+        let api = match self.value(API) {
+            // Anthropic speaks only its own format.
+            api if api == API_AUTO || provider == Provider::Anthropic => {
+                provider.api_for(&self.model()?).name().to_owned()
+            }
+            api => api,
+        };
         let base_url = self.value(BASE_URL);
         Ok(ModelOptions {
-            // Anthropic speaks only its own format.
-            api: (api != API_AUTO && provider == Provider::OpencodeGo).then_some(api),
-            base_url: (!base_url.is_empty() && base_url != provider.default_base_url())
-                .then_some(base_url),
+            api,
+            base_url: if base_url.is_empty() {
+                provider.default_base_url().to_owned()
+            } else {
+                base_url
+            },
             max_tokens: self
                 .number(MAX_TOKENS, 1)?
-                .filter(|&n| n != config::DEFAULT_MAX_TOKENS),
+                .unwrap_or(config::DEFAULT_MAX_TOKENS),
             compact_at_tokens: self
                 .number(COMPACT_AT, config::MIN_COMPACT_AT_TOKENS)?
-                .filter(|&n| n != config::DEFAULT_COMPACT_AT_TOKENS),
+                .unwrap_or(config::DEFAULT_COMPACT_AT_TOKENS),
         })
     }
 
-    /// The `[browser]` settings, each `None` when it is the default.
+    /// The `[browser]` settings; a field left empty is written as its default.
     fn browser_options(&self) -> std::result::Result<BrowserOptions, String> {
         Ok(BrowserOptions {
             width: self
                 .number(BROWSER_WIDTH, config::MIN_SCREEN.0)?
-                .filter(|&n| n != config::DEFAULT_SCREEN.0),
+                .unwrap_or(config::DEFAULT_SCREEN.0),
             height: self
                 .number(BROWSER_HEIGHT, config::MIN_SCREEN.1)?
-                .filter(|&n| n != config::DEFAULT_SCREEN.1),
+                .unwrap_or(config::DEFAULT_SCREEN.1),
             viewer_port: self
                 .number(VIEWER_PORT, 1)?
-                .filter(|&n| n != config::DEFAULT_VIEWER_PORT),
+                .unwrap_or(config::DEFAULT_VIEWER_PORT),
         })
     }
 
@@ -780,15 +808,15 @@ impl Form {
         }
     }
 
-    /// `None` when empty, meaning this machine's time zone.
-    fn timezone(&self) -> std::result::Result<Option<String>, String> {
+    /// This machine's time zone when empty.
+    fn timezone(&self) -> std::result::Result<String, String> {
         let zone = self.value(TIMEZONE);
         if zone.is_empty() {
-            return Ok(None);
+            return Ok(config::system_timezone().name().to_owned());
         }
         zone.parse::<chrono_tz::Tz>()
             .map_err(|_| format!("Time zone `{zone}` is not an IANA name like Asia/Taipei"))?;
-        Ok(Some(zone))
+        Ok(zone)
     }
 
     fn discord(&self) -> std::result::Result<Option<DiscordAnswers>, String> {
@@ -917,9 +945,7 @@ impl Form {
                 table["token"] = toml_edit::value(token);
             }
         }
-        if self.fields[MCP_APPROVE].value == NEVER_ASK {
-            table["approve"] = toml_edit::value(false);
-        }
+        table["approve"] = toml_edit::value(self.fields[MCP_APPROVE].value != NEVER_ASK);
         Ok((remove, Some((name, table))))
     }
 
@@ -931,13 +957,30 @@ impl Form {
             discord: self.discord()?,
             search: self.search()?,
             log_level: self.required(LOG)?,
-            auto_approval: (self.fields[APPROVAL].value == AUTO).then(|| {
-                let reviewer = self.value(REVIEWER);
-                (reviewer != SAME_MODEL).then_some(reviewer)
-            }),
+            auto_approval: if self.fields[APPROVAL].value == AUTO {
+                Some(match self.value(REVIEWER) {
+                    reviewer if reviewer == SAME_MODEL => self.model()?,
+                    reviewer => reviewer,
+                })
+            } else {
+                None
+            },
             database: PathBuf::from(self.required(DATABASE)?),
             timezone: self.timezone()?,
             options: self.model_options()?,
+            other_keys: self
+                .keys
+                .iter()
+                .filter(|(_, (key, _))| !key.trim().is_empty())
+                .map(|(&provider, (key, url))| {
+                    let url = if url.is_empty() {
+                        provider.default_base_url().to_owned()
+                    } else {
+                        url.clone()
+                    };
+                    (provider, key.trim().to_owned(), url)
+                })
+                .collect(),
             browser: self.browser_options()?,
         })
     }
@@ -1257,7 +1300,7 @@ fn help(i: usize) -> (&'static str, &'static str) {
         VIEWER_PORT => "Port of the /browser live view on this machine's network.",
         PROVIDER => {
             "Where Mokuzu's model runs: OpenCode Go, or Anthropic's API for Claude with an \
-             Anthropic API key."
+             Anthropic API key. Each keeps its own API key, so switching back finds it again."
         }
         _ => "Keep it, or Remove it.",
     };
@@ -1352,34 +1395,33 @@ enum SearchAnswers {
 
 struct Answers {
     provider: Provider,
+    /// Other providers' keys and base URLs, saved in their own sections.
+    other_keys: Vec<(Provider, String, String)>,
     model: String,
     api_key: String,
     discord: Option<DiscordAnswers>,
     search: Option<SearchAnswers>,
     log_level: String,
-    /// `Some` for auto approval, holding the reviewer model if it isn't the main one.
-    auto_approval: Option<Option<String>>,
+    /// `Some` for auto approval, holding the reviewer model.
+    auto_approval: Option<String>,
     database: PathBuf,
-    /// `None` follows this machine's time zone.
-    timezone: Option<String>,
+    timezone: String,
     options: ModelOptions,
     browser: BrowserOptions,
 }
 
-/// `[browser]` keys, each `None` when it is the default.
-#[derive(Default)]
+/// `[browser]` keys.
 struct BrowserOptions {
-    width: Option<u32>,
-    height: Option<u32>,
-    viewer_port: Option<u16>,
+    width: u32,
+    height: u32,
+    viewer_port: u16,
 }
 
-#[derive(Default)]
 struct ModelOptions {
-    api: Option<String>,
-    base_url: Option<String>,
-    max_tokens: Option<u32>,
-    compact_at_tokens: Option<usize>,
+    api: String,
+    base_url: String,
+    max_tokens: u32,
+    compact_at_tokens: usize,
 }
 
 /// MCP servers to remove, and one to add as `(name, table)`.
@@ -1423,61 +1465,65 @@ fn quote(text: &str) -> String {
 }
 
 fn render_toml(answers: &Answers) -> String {
-    let mut text =
-        "# Written by `mokuzu configure`; run it again to change these settings.\n".to_owned();
-    if let Some(zone) = &answers.timezone {
-        text.push_str(&format!("\ntimezone = {}\n", quote(zone)));
-    }
     let options = &answers.options;
-    let mut model = format!("name = {}\n", quote(&answers.model));
-    if let Some(api) = &options.api {
-        model.push_str(&format!("api = {}\n", quote(api)));
+    let mut text = format!(
+        "# Written by `mokuzu configure`; run it again to change these settings.\n\
+         version = {version}\n\
+         timezone = {zone}\n\
+         \n\
+         [model]\n\
+         name = {model}\n\
+         provider = {section}\n\
+         api = {api}\n\
+         max_tokens = {max_tokens}\n\
+         compact_at_tokens = {compact_at}\n\
+         \n\
+         [{section_name}]\n\
+         api_key = {key}\n\
+         base_url = {url}\n",
+        version = config::VERSION,
+        zone = quote(&answers.timezone),
+        model = quote(&answers.model),
+        section = quote(answers.provider.section()),
+        section_name = answers.provider.section(),
+        api = quote(&options.api),
+        max_tokens = options.max_tokens,
+        compact_at = options.compact_at_tokens,
+        key = quote(&answers.api_key),
+        url = quote(&options.base_url),
+    );
+    for (provider, key, url) in &answers.other_keys {
+        text.push_str(&format!(
+            "\n[{}]\napi_key = {}\nbase_url = {}\n",
+            provider.section(),
+            quote(key),
+            quote(url)
+        ));
     }
-    if let Some(n) = options.max_tokens {
-        model.push_str(&format!("max_tokens = {n}\n"));
-    }
-    if let Some(n) = options.compact_at_tokens {
-        model.push_str(&format!("compact_at_tokens = {n}\n"));
-    }
-    let mut key = format!("api_key = {}\n", quote(&answers.api_key));
-    if let Some(url) = &options.base_url {
-        key.push_str(&format!("base_url = {}\n", quote(url)));
-    }
+    let browser = &answers.browser;
     text.push_str(&format!(
         "\n\
-         [model]\n\
-         {model}\
-         \n\
-         [{section}]\n\
-         {key}\
-         \n\
          [log]\n\
          level = {log}\n\
          \n\
          [database]\n\
-         path = {db}\n",
-        section = answers.provider.section(),
+         path = {db}\n\
+         \n\
+         [browser]\n\
+         width = {width}\n\
+         height = {height}\n\
+         viewer_port = {port}\n\
+         \n\
+         [approval]\n",
         log = quote(&answers.log_level),
         db = quote(&answers.database.to_string_lossy()),
+        width = browser.width,
+        height = browser.height,
+        port = browser.viewer_port,
     ));
-    let browser = &answers.browser;
-    if browser.width.is_some() || browser.height.is_some() || browser.viewer_port.is_some() {
-        text.push_str("\n[browser]\n");
-        if let Some(n) = browser.width {
-            text.push_str(&format!("width = {n}\n"));
-        }
-        if let Some(n) = browser.height {
-            text.push_str(&format!("height = {n}\n"));
-        }
-        if let Some(port) = browser.viewer_port {
-            text.push_str(&format!("viewer_port = {port}\n"));
-        }
-    }
-    if let Some(reviewer) = &answers.auto_approval {
-        text.push_str("\n[approval]\nmode = \"auto\"\n");
-        if let Some(model) = reviewer {
-            text.push_str(&format!("model = {}\n", quote(model)));
-        }
+    match &answers.auto_approval {
+        Some(reviewer) => text.push_str(&format!("mode = \"auto\"\nmodel = {}\n", quote(reviewer))),
+        None => text.push_str("mode = \"ask\"\n"),
     }
     match &answers.search {
         Some(SearchAnswers::Searxng { url, auth, results }) => {
@@ -1514,9 +1560,7 @@ fn render_toml(answers: &Answers) -> String {
                     config::Users::Only(ids) => format!("[{}]", join_ids(ids)),
                 }
             ));
-            if guild.mention_only {
-                text.push_str("mention_only = true\n");
-            }
+            text.push_str(&format!("mention_only = {}\n", guild.mention_only));
         }
     }
     text
@@ -1589,6 +1633,7 @@ mod tests {
     fn rendered_config_parses_back() {
         let text = render_toml(&Answers {
             provider: Provider::OpencodeGo,
+            other_keys: Vec::new(),
             model: "qwen3.8-max".to_owned(),
             api_key: "sk-\"quoted\"".to_owned(),
             discord: Some(DiscordAnswers {
@@ -1613,21 +1658,25 @@ mod tests {
                 results: 8,
             }),
             log_level: "info".to_owned(),
-            auto_approval: Some(Some("glm-5.3-flash".to_owned())),
+            auto_approval: Some("glm-5.3-flash".to_owned()),
             database: PathBuf::from("/tmp/m.db"),
-            timezone: Some("Asia/Taipei".to_owned()),
+            timezone: "Asia/Taipei".to_owned(),
             options: ModelOptions {
-                api: Some("openai".to_owned()),
-                base_url: Some("https://proxy.example/v1".to_owned()),
-                max_tokens: Some(8000),
-                compact_at_tokens: Some(50_000),
+                api: "openai".to_owned(),
+                base_url: "https://proxy.example/v1".to_owned(),
+                max_tokens: 8000,
+                compact_at_tokens: 50_000,
             },
             browser: BrowserOptions {
-                width: Some(1920),
-                height: None,
-                viewer_port: Some(8765),
+                width: 1920,
+                height: 800,
+                viewer_port: 8765,
             },
         });
+        assert!(
+            config::migrate(&text).expect("valid").is_none(),
+            "written at the current version, every key spelled out"
+        );
         let config = Config::parse(&text).expect("valid");
         assert_eq!(config.timezone, chrono_tz::Tz::Asia__Taipei);
         assert_eq!(config.api, Api::Openai);
@@ -1636,7 +1685,7 @@ mod tests {
             (config.max_tokens, config.compact_at_tokens),
             (8000, 50_000)
         );
-        assert_eq!(config.browser_screen, (1920, config::DEFAULT_SCREEN.1));
+        assert_eq!(config.browser_screen, (1920, 800));
         assert_eq!(config.viewer_port, 8765);
         assert_eq!(config.model, "qwen3.8-max");
         assert_eq!(
@@ -1654,10 +1703,7 @@ mod tests {
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
         assert_eq!(reopened.value(VIEWER_PORT), "8765");
-        assert_eq!(
-            reopened.model_options().expect("valid").max_tokens,
-            Some(8000)
-        );
+        assert_eq!(reopened.model_options().expect("valid").max_tokens, 8000);
         let first = reopened.guild_first();
         assert_eq!(reopened.fields[first].label, "100");
         assert_eq!(
@@ -1699,6 +1745,7 @@ mod tests {
         };
         let text = render_toml(&Answers {
             provider: Provider::OpencodeGo,
+            other_keys: Vec::new(),
             model: "m".to_owned(),
             api_key: "k".to_owned(),
             discord: None,
@@ -1706,9 +1753,9 @@ mod tests {
             log_level: "warn".to_owned(),
             auto_approval: None,
             database: PathBuf::from("/tmp/m.db"),
-            timezone: None,
-            options: ModelOptions::default(),
-            browser: BrowserOptions::default(),
+            timezone: "UTC".to_owned(),
+            options: form.model_options().expect("valid"),
+            browser: form.browser_options().expect("valid"),
         });
         let config = Config::parse(&text).expect("valid");
         let Some(config::Search::Brave(brave)) = &config.search else {
@@ -1721,34 +1768,45 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_swaps_models_and_base_url_and_saves_its_own_section() {
+    fn each_provider_keeps_its_own_key_and_base_url() {
         let mut form = Form::new(None).expect("form");
-        form.fields[KEY].value = "sk-ant".to_owned();
+        form.fields[KEY].value = "o-key".to_owned();
         form.fields[PROVIDER].value = ANTHROPIC.to_owned();
         form.switch_provider(Provider::OpencodeGo);
+        assert_eq!(form.value(KEY), "", "no key carried over");
         assert_eq!(form.value(MODEL), "claude-opus-5-5");
         assert_eq!(form.value(BASE_URL), config::ANTHROPIC_BASE_URL);
         form.step = 4;
         assert!(!form.visible().contains(&API), "Anthropic has one format");
+        form.fields[KEY].value = "sk-ant".to_owned();
         let answers = form.answers().expect("valid");
-        assert!(
-            answers.options.base_url.is_none(),
-            "defaults aren't written"
+        assert_eq!(
+            answers.options.base_url,
+            config::ANTHROPIC_BASE_URL,
+            "defaults are written out"
         );
         let text = render_toml(&answers);
         assert!(
-            text.contains("[anthropic]\napi_key = \"sk-ant\"\n"),
+            text.contains("[anthropic]\napi_key = \"sk-ant\"\n")
+                && text.contains("[opencode-go]\napi_key = \"o-key\"\n")
+                && text.contains("provider = \"anthropic\""),
             "{text}"
         );
         let config = Config::parse(&text).expect("valid");
         assert_eq!(config.provider, Provider::Anthropic);
-        let reopened = Form::new(Some(&config)).expect("form");
+        assert_eq!(config.api_key.as_str(), "sk-ant");
+        let mut reopened = Form::new(Some(&config)).expect("form");
         assert_eq!(reopened.value(PROVIDER), ANTHROPIC);
+        assert_eq!(reopened.value(KEY), "sk-ant");
         assert_eq!(reopened.value(MODEL), "claude-opus-5-5");
         let Kind::Select(reviewers) = &reopened.fields[REVIEWER].kind else {
             panic!("reviewer menu");
         };
         assert!(reviewers.iter().any(|r| r == "claude-haiku-5-5"));
+        reopened.fields[PROVIDER].value = OPENCODE_GO.to_owned();
+        reopened.switch_provider(Provider::Anthropic);
+        assert_eq!(reopened.value(KEY), "o-key");
+        assert_eq!(reopened.value(BASE_URL), config::DEFAULT_BASE_URL);
     }
 
     #[test]
@@ -1834,16 +1892,16 @@ mod tests {
         form.fields[VIEWER_PORT].value = config::DEFAULT_VIEWER_PORT.to_string();
         form.check_step(form.step).expect("advanced step valid");
         let browser = form.browser_options().expect("valid");
-        assert!(
-            browser.width.is_none() && browser.viewer_port.is_none(),
-            "defaults aren't written"
+        assert_eq!(
+            (browser.width, browser.viewer_port),
+            (config::DEFAULT_SCREEN.0, config::DEFAULT_VIEWER_PORT),
+            "defaults are written out"
         );
-        assert!(
-            form.model_options()
-                .expect("valid")
-                .compact_at_tokens
-                .is_none(),
-            "defaults aren't written"
+        form.fields[COMPACT_AT].value.clear();
+        assert_eq!(
+            form.model_options().expect("valid").compact_at_tokens,
+            config::DEFAULT_COMPACT_AT_TOKENS,
+            "an empty field is written as its default"
         );
 
         let answers = form.answers().expect("all steps valid");

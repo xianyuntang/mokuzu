@@ -1,40 +1,65 @@
 # Mokuzu config. Easiest: run `mokuzu configure`, which writes ~/.config/mokuzu/config.toml for you.
 # Or copy this file there, or pass a path: `mokuzu --config path/to/config.toml`.
 
-# Optional. Your IANA time zone, for the time stamped on each message and scheduled jobs. Defaults
-# to this machine's (`TZ`, else the system setting); set it when Mokuzu runs somewhere else, like a
-# UTC server.
-# `mokuzu configure` sets it under Advanced.
-# timezone = "Asia/Taipei"
+# Every setting is written out; none has a hidden default. `version` is the file's format:
+# when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
+# config.toml.bak.
+version = 1
+
+# Your IANA time zone, for the time stamped on each message and scheduled jobs.
+timezone = "Asia/Taipei"
 
 [model]
-# Optional. Any model your provider serves. OpenCode Go: e.g. minimax-m3 (default), qwen3.8-max,
-# glm-5.3, kimi-k3, deepseek-v4-pro. Anthropic: e.g. claude-opus-5-5 (default), claude-sonnet-5-5,
-# claude-haiku-5-5.
+# Any model your provider serves. OpenCode Go: e.g. minimax-m3, qwen3.8-max, glm-5.3, kimi-k3,
+# deepseek-v4-pro. Anthropic: e.g. claude-opus-5-5, claude-sonnet-5-5, claude-haiku-5-5.
 name = "minimax-m3"
-# Optional, OpenCode Go only (Anthropic speaks only "anthropic"). "anthropic" (/messages),
-# "openai" (/chat/completions), "responses" (/responses), or "gemini" (generateContent); guessed
-# from the name: minimax*/qwen*/claude* use anthropic, gpt*/grok*/muse* responses, gemini* gemini,
-# and everything else openai.
-# api = "anthropic"
-# Optional. Default 16000.
-# max_tokens = 16000
-# Optional. When the conversation grows past about this many tokens, long tool output in older
-# turns is cleared, and if that isn't enough, older turns are replaced by a summary, so requests
-# stay within the model's context window. Lower it for models with a smaller window. Default 200000.
-# compact_at_tokens = 200000
+# Which provider section below is in use: "opencode-go" or "anthropic". Each keeps its own key,
+# so you can keep both and switch here.
+provider = "opencode-go"
+# Endpoint format. "anthropic" (/messages), "openai" (/chat/completions), "responses"
+# (/responses), or "gemini" (generateContent). On OpenCode Go: minimax*/qwen*/claude* use
+# anthropic, gpt*/grok*/muse* responses, gemini* gemini, and everything else openai. Anthropic
+# speaks only "anthropic".
+api = "anthropic"
+max_tokens = 16000
+# When the conversation grows past about this many tokens, long tool output in older turns is
+# cleared, and if that isn't enough, older turns are replaced by a summary, so requests stay
+# within the model's context window. Lower it for models with a smaller window. At least 10000.
+compact_at_tokens = 200000
 
-# The provider: set exactly one of [opencode-go] and [anthropic].
 [opencode-go]
 api_key = "your-opencode-api-key"
-# Optional. ".../messages" is appended.
-# base_url = "https://opencode.ai/zen/go/v1"
+# ".../messages" is appended. Change it only for a proxy.
+base_url = "https://opencode.ai/zen/go/v1"
 
-# Or Anthropic's own API, for Claude models, with a key from https://platform.claude.com.
+# Anthropic's own API, for Claude models, with a key from https://platform.claude.com.
 # [anthropic]
 # api_key = "sk-ant-..."
-# # Optional. Change it only for a proxy.
 # base_url = "https://api.anthropic.com/v1"
+
+# How MCP calls and settings changes get approved. "ask" asks you every time; "auto" lets the
+# reviewer `model` pass low-risk actions and asks you about the rest.
+[approval]
+mode = "ask"
+# Only with mode = "auto": the reviewer model. A small fast one is enough.
+# model = "glm-5.3-flash"
+
+[log]
+# tracing filter, e.g. "warn", "info", "mokuzu=debug".
+level = "warn"
+
+# Conversation history (SQLite); send /new to start over.
+[database]
+path = "/Users/you/.local/share/mokuzu/mokuzu.db"
+
+# The virtual desktop MCP servers' browsers draw on, and its live view.
+[browser]
+# Desktop size in pixels when no monitor is plugged in (Xvfb). Larger makes the /browser live
+# view sharper. At least 640x480.
+width = 1280
+height = 800
+# Port of the /browser live view.
+viewer_port = 22050
 
 # Optional. Enables the `web_search` tool through your SearXNG instance, or through the Brave
 # Search API below; set only one. SearXNG's settings.yml must list `json` under search.formats,
@@ -44,52 +69,29 @@ api_key = "your-opencode-api-key"
 # # Optional basic auth; set both or neither. Use https so the password isn't sent in the clear.
 # username = "me"
 # password = "secret"
-# # Optional. Results per search, 1-20. Default 5.
+# # Results per search, 1-20.
 # results = 5
 
 # Optional. Enables the `web_search` tool through the Brave Search API instead of SearXNG.
 # Get a key at https://api-dashboard.search.brave.com. Each search uses one request of your plan.
 # [tools.brave]
 # api_key = "BSA..."
-# # Optional. Results per search, 1-20. Default 5.
+# # Results per search, 1-20.
 # results = 5
 
 # Optional. MCP servers whose tools the model can call, named `<server>__<tool>`.
-# Every call asks you first; set `approve = false` only for servers that can't change anything.
+# `approve = true` asks you before each call; set false only for servers that can't change anything.
 # A local server over stdio:
 # [mcp.servers.github]
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-github"]
 # env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }
+# approve = true
 # A remote server over streamable HTTP, with an optional bearer token:
 # [mcp.servers.docs]
 # url = "https://example.com/mcp"
 # token = "secret"
 # approve = false
-
-# Optional. How MCP calls and settings changes get approved. "ask" (default) asks you every time;
-# "auto" lets a reviewer model pass low-risk actions and asks you about the rest.
-# [approval]
-# mode = "auto"
-# # Optional. Reviewer model; defaults to model.name. A small fast one is enough.
-# model = "glm-5.3-flash"
-
-[log]
-# tracing filter, e.g. "warn", "info", "mokuzu=debug".
-level = "warn"
-
-# Optional. Conversation history (SQLite); send /new to start over.
-# [database]
-# path = "/Users/you/.local/share/mokuzu/mokuzu.db"
-
-# Optional. The virtual desktop MCP servers' browsers draw on, and its live view.
-# [browser]
-# # Desktop size in pixels when no monitor is plugged in (Xvfb); default 1280x800.
-# # Larger makes screenshots and the /browser live view sharper.
-# width = 1920
-# height = 1080
-# # Port of the /browser live view; default 22050.
-# viewer_port = 22050
 
 # Optional. Needed for `mokuzu serve`: chat with Mokuzu by DM to your Discord bot.
 # [discord]
@@ -106,5 +108,5 @@ level = "warn"
 # # Or "*" for everyone in the server. Only the main allowed_users can approve actions there, but
 # # anyone can make the bot read files on this machine.
 # # allowed_users = "*"
-# # Answer only messages that @mention the bot, in its threads too (default false).
+# # Answer only messages that @mention the bot, in its threads too.
 # mention_only = true

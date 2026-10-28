@@ -6,6 +6,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+mod migrate;
+
+pub use migrate::VERSION;
+#[cfg(test)]
+pub use migrate::migrate;
+
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
@@ -65,7 +71,8 @@ impl Api {
 }
 
 /// Who serves the model: the config's `[opencode-go]` or `[anthropic]` section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Provider {
     OpencodeGo,
     /// Anthropic's own API, which speaks only the Anthropic format.
@@ -105,6 +112,13 @@ impl Provider {
     }
 }
 
+/// One provider's section: its key, and the base URL it is reached at.
+#[derive(Debug, Clone)]
+pub struct ProviderKey {
+    pub api_key: Secret,
+    pub base_url: String,
+}
+
 /// API key or token whose `Debug` output is redacted.
 #[derive(Clone, Deserialize)]
 #[serde(transparent)]
@@ -125,9 +139,11 @@ impl std::fmt::Debug for Secret {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
-    /// IANA name, e.g. `Asia/Taipei`; defaults to this machine's time zone.
-    timezone: Option<String>,
-    #[serde(default)]
+    /// Format version; `parse` migrates older files first, so it is always `VERSION` here.
+    #[serde(default, rename = "version")]
+    _version: Option<i64>,
+    /// IANA name, e.g. `Asia/Taipei`.
+    timezone: String,
     model: ModelSection,
     #[serde(rename = "opencode-go")]
     opencode_go: Option<ProviderSection>,
@@ -136,44 +152,41 @@ struct File {
     tools: ToolsSection,
     #[serde(default)]
     mcp: McpSection,
-    #[serde(default)]
     approval: ApprovalSection,
-    #[serde(default)]
     log: LogSection,
     discord: Option<DiscordSection>,
-    #[serde(default)]
     database: DatabaseSection,
-    #[serde(default)]
     browser: BrowserSection,
 }
 
 /// `[browser]`: the virtual desktop browsers draw on, and its live view.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowserSection {
-    /// Screen size in pixels when Chrome runs on Xvfb or headless; defaults to `DEFAULT_SCREEN`.
-    width: Option<u32>,
-    height: Option<u32>,
-    /// Port of the `/browser` live view; defaults to `DEFAULT_VIEWER_PORT`.
-    viewer_port: Option<u16>,
+    /// Size in pixels of the Xvfb desktop.
+    width: u32,
+    height: u32,
+    /// Port of the `/browser` live view.
+    viewer_port: u16,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DatabaseSection {
-    /// Defaults to `~/.local/share/mokuzu/mokuzu.db`.
-    path: Option<PathBuf>,
+    path: PathBuf,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ModelSection {
-    name: Option<String>,
-    /// Wire format; inferred from the model name when omitted.
-    api: Option<Api>,
-    max_tokens: Option<u32>,
+    name: String,
+    /// Which provider section is in use.
+    provider: Provider,
+    /// Wire format.
+    api: Api,
+    max_tokens: u32,
     /// Estimated history size that triggers compaction.
-    compact_at_tokens: Option<usize>,
+    compact_at_tokens: usize,
 }
 
 /// `[opencode-go]` or `[anthropic]`: the provider's key, and a base URL to reach it through.
@@ -181,18 +194,12 @@ struct ModelSection {
 #[serde(deny_unknown_fields)]
 struct ProviderSection {
     api_key: Secret,
-    base_url: Option<String>,
+    base_url: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolsSection {
-    /// Left over from the removed bash tool; accepted so older configs still load.
-    #[serde(default, rename = "bash")]
-    _bash: Option<serde::de::IgnoredAny>,
-    /// Left over from the removed claude_code tool; accepted so older configs still load.
-    #[serde(default, rename = "claude_code")]
-    _claude_code: Option<serde::de::IgnoredAny>,
     searxng: Option<SearxngSection>,
     brave: Option<BraveSection>,
 }
@@ -204,15 +211,10 @@ struct SearxngSection {
     url: String,
     username: Option<String>,
     password: Option<Secret>,
-    #[serde(default = "SearxngSection::default_results")]
     results: usize,
 }
 
 impl SearxngSection {
-    fn default_results() -> usize {
-        5
-    }
-
     fn validate(self) -> Result<Searxng> {
         let url = self.url.trim_end_matches('/').to_owned();
         if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -239,7 +241,6 @@ impl SearxngSection {
 #[serde(deny_unknown_fields)]
 struct BraveSection {
     api_key: Secret,
-    #[serde(default = "SearxngSection::default_results")]
     results: usize,
 }
 
@@ -295,19 +296,17 @@ pub struct Searxng {
 }
 
 /// `[approval]`: who approves MCP calls and settings changes.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApprovalSection {
-    #[serde(default)]
     mode: ApprovalMode,
-    /// Reviewer model for `auto`; defaults to `model.name`.
+    /// Reviewer model; required for `auto`.
     model: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum ApprovalMode {
-    #[default]
     Ask,
     Auto,
 }
@@ -342,16 +341,11 @@ pub struct McpServer {
     pub url: Option<String>,
     /// Sent as `Authorization: Bearer <token>` to `url`.
     pub token: Option<Secret>,
-    /// Ask the user before each call. Default true; turn off only for servers that can't change anything.
-    #[serde(default = "McpServer::default_approve")]
+    /// Ask the user before each call; turn off only for servers that can't change anything.
     pub approve: bool,
 }
 
 impl McpServer {
-    fn default_approve() -> bool {
-        true
-    }
-
     fn validate(&self, name: &str) -> Result<()> {
         // Tool names sent to the model are `<server>__<tool>`, limited to these characters.
         if name.is_empty()
@@ -379,22 +373,7 @@ impl McpServer {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogSection {
-    #[serde(default = "LogSection::default_level")]
     level: String,
-}
-
-impl LogSection {
-    fn default_level() -> String {
-        "warn".to_owned()
-    }
-}
-
-impl Default for LogSection {
-    fn default() -> Self {
-        Self {
-            level: Self::default_level(),
-        }
-    }
 }
 
 /// `[discord]`: lets `mokuzu serve` chat through a Discord bot, by DM and in any server channel.
@@ -446,7 +425,6 @@ pub struct GuildRule {
     /// Who may talk to the bot in this server: user IDs, or `"*"` for everyone.
     pub allowed_users: Users,
     /// Answer only messages that @mention the bot, in its threads too.
-    #[serde(default)]
     pub mention_only: bool,
 }
 
@@ -494,6 +472,9 @@ pub struct Config {
     pub api: Api,
     /// The provider's base URL, e.g. `https://opencode.ai/zen/go/v1`.
     pub base_url: String,
+    /// Every provider section in the file, the one in use too, so `mokuzu configure` keeps each
+    /// provider's own key.
+    pub keys: Vec<(Provider, ProviderKey)>,
     /// Enables the `web_search` tool when set.
     pub search: Option<Search>,
     /// MCP servers by name.
@@ -519,8 +500,18 @@ impl Config {
         if !path.exists() {
             bail!("no config at {}; run `mokuzu configure`", path.display());
         }
-        let text = std::fs::read_to_string(path)
+        let mut text = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config {}", path.display()))?;
+        if let Some(migrated) =
+            migrate::migrate(&text).with_context(|| format!("invalid config {}", path.display()))?
+        {
+            write(path, &migrated)?;
+            eprintln!(
+                "updated {} to config version {VERSION}; the old file is kept as .bak",
+                path.display()
+            );
+            text = migrated;
+        }
         let config =
             Self::parse(&text).with_context(|| format!("invalid config {}", path.display()))?;
         Ok(Self {
@@ -529,8 +520,10 @@ impl Config {
         })
     }
 
+    /// Parses `text`, migrating it to `VERSION` first in memory.
     pub fn parse(text: &str) -> Result<Self> {
-        let file: File = toml::from_str(text)?;
+        let migrated = migrate::migrate(text)?;
+        let file: File = toml::from_str(migrated.as_deref().unwrap_or(text))?;
         if file
             .discord
             .as_ref()
@@ -538,36 +531,43 @@ impl Config {
         {
             bail!("discord.allowed_users is empty; list your Discord user ID");
         }
-        let database_path = match file.database.path {
-            Some(path) => path,
-            None => std::env::home_dir()
-                .context("cannot find home directory for the default database path")?
-                .join(".local/share/mokuzu/mokuzu.db"),
-        };
-        let (provider, section) = match (file.opencode_go, file.anthropic) {
-            (Some(section), None) => (Provider::OpencodeGo, section),
-            (None, Some(section)) => (Provider::Anthropic, section),
-            (Some(_), Some(_)) => bail!("set only one of [opencode-go] and [anthropic]"),
-            (None, None) => bail!("add [opencode-go] or [anthropic] with your api_key"),
-        };
-        let base_url = section
-            .base_url
-            .unwrap_or_else(|| provider.default_base_url().to_owned());
+        let keys: Vec<(Provider, ProviderKey)> = [
+            (Provider::OpencodeGo, file.opencode_go),
+            (Provider::Anthropic, file.anthropic),
+        ]
+        .into_iter()
+        .filter_map(|(provider, section)| {
+            let section = section?;
+            let key = ProviderKey {
+                api_key: section.api_key,
+                base_url: section.base_url.trim_end_matches('/').to_owned(),
+            };
+            Some((provider, key))
+        })
+        .collect();
+        if keys.is_empty() {
+            bail!("add [opencode-go] or [anthropic] with your api_key");
+        }
+        let provider = file.model.provider;
+        let ProviderKey { api_key, base_url } = keys
+            .iter()
+            .find(|(p, _)| *p == provider)
+            .map(|(_, key)| key.clone())
+            .with_context(|| {
+                format!(
+                    "model.provider is {0}, but there is no [{0}] section",
+                    provider.section()
+                )
+            })?;
 
-        let compact_at_tokens = file
-            .model
-            .compact_at_tokens
-            .unwrap_or(DEFAULT_COMPACT_AT_TOKENS);
+        let compact_at_tokens = file.model.compact_at_tokens;
         if compact_at_tokens < MIN_COMPACT_AT_TOKENS {
             bail!("model.compact_at_tokens must be at least {MIN_COMPACT_AT_TOKENS}");
         }
         for (name, server) in &file.mcp.servers {
             server.validate(name)?;
         }
-        let browser_screen = (
-            file.browser.width.unwrap_or(DEFAULT_SCREEN.0),
-            file.browser.height.unwrap_or(DEFAULT_SCREEN.1),
-        );
+        let browser_screen = (file.browser.width, file.browser.height);
         if browser_screen.0 < MIN_SCREEN.0 || browser_screen.1 < MIN_SCREEN.1 {
             bail!(
                 "browser.width and browser.height must be at least {}x{}",
@@ -575,41 +575,36 @@ impl Config {
                 MIN_SCREEN.1
             );
         }
-        if file.browser.viewer_port == Some(0) {
+        if file.browser.viewer_port == 0 {
             bail!("browser.viewer_port must be between 1 and 65535");
         }
-        let timezone = match file.timezone {
-            Some(name) => name.parse().map_err(|_| {
-                anyhow::anyhow!("timezone {name:?} is not an IANA time zone like Asia/Taipei")
-            })?,
-            None => system_timezone(),
-        };
-        let model = file
-            .model
-            .name
-            .unwrap_or_else(|| provider.default_model().to_owned());
-        let api = match (provider, file.model.api) {
-            (Provider::Anthropic, Some(api)) if api != Api::Anthropic => {
-                bail!("[anthropic] only speaks model.api = \"anthropic\"")
-            }
-            (_, Some(api)) => api,
-            (_, None) => provider.api_for(&model),
-        };
-        let approval = match file.approval.mode {
-            ApprovalMode::Ask => Approval::Ask,
-            ApprovalMode::Auto => Approval::Auto {
-                model: file.approval.model.unwrap_or_else(|| model.clone()),
-            },
+        let timezone = file.timezone.parse().map_err(|_| {
+            anyhow::anyhow!(
+                "timezone {:?} is not an IANA time zone like Asia/Taipei",
+                file.timezone
+            )
+        })?;
+        let model = file.model.name;
+        let api = file.model.api;
+        if provider == Provider::Anthropic && api != Api::Anthropic {
+            bail!("[anthropic] only speaks model.api = \"anthropic\"");
+        }
+        let approval = match (file.approval.mode, file.approval.model) {
+            (ApprovalMode::Ask, None) => Approval::Ask,
+            (ApprovalMode::Ask, Some(_)) => bail!("approval.model is only for mode = \"auto\""),
+            (ApprovalMode::Auto, Some(model)) => Approval::Auto { model },
+            (ApprovalMode::Auto, None) => bail!("approval.mode = \"auto\" needs approval.model"),
         };
         Ok(Self {
             approval,
             api,
             model,
-            max_tokens: file.model.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            max_tokens: file.model.max_tokens,
             compact_at_tokens,
             provider,
-            api_key: section.api_key,
-            base_url: base_url.trim_end_matches('/').to_owned(),
+            api_key,
+            base_url,
+            keys,
             search: match (file.tools.searxng, file.tools.brave) {
                 (Some(_), Some(_)) => {
                     bail!("set only one of [tools.searxng] and [tools.brave] for web search")
@@ -621,10 +616,10 @@ impl Config {
             mcp: file.mcp.servers,
             log_level: file.log.level,
             discord: file.discord,
-            database_path,
+            database_path: file.database.path,
             timezone,
             browser_screen,
-            viewer_port: file.browser.viewer_port.unwrap_or(DEFAULT_VIEWER_PORT),
+            viewer_port: file.browser.viewer_port,
             path: PathBuf::new(),
         })
     }
@@ -674,7 +669,12 @@ mod tests {
 
     #[test]
     fn example_config_parses() {
-        let config = Config::parse(include_str!("../../../config.example.toml")).expect("valid");
+        let example = include_str!("../../../config.example.toml");
+        assert!(
+            migrate::migrate(example).expect("valid").is_none(),
+            "the example is at the current version"
+        );
+        let config = Config::parse(example).expect("valid");
         assert_eq!(config.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(config.api, Api::Anthropic);
     }
@@ -688,7 +688,12 @@ mod tests {
         assert_eq!(config.api, Api::Anthropic);
         assert_eq!(config.api_key.as_str(), "sk-ant");
         let both = "[anthropic]\napi_key = \"a\"\n[opencode-go]\napi_key = \"o\"\n";
-        assert!(Config::parse(both).is_err());
+        assert!(Config::parse(both).is_err(), "both need model.provider");
+        let picked =
+            Config::parse(&format!("[model]\nprovider = \"anthropic\"\n{both}")).expect("valid");
+        assert_eq!(picked.provider, Provider::Anthropic);
+        assert_eq!(picked.api_key.as_str(), "a");
+        assert_eq!(picked.keys.len(), 2, "the unused key is kept");
         assert!(Config::parse("[log]\nlevel = \"warn\"\n").is_err());
         let wrong_api = "[model]\napi = \"openai\"\n[anthropic]\napi_key = \"a\"\n";
         assert!(Config::parse(wrong_api).is_err());
@@ -847,12 +852,32 @@ mod tests {
     }
 
     #[test]
+    fn current_version_files_must_spell_out_every_key() {
+        let old = "[opencode-go]\napi_key = \"k\"\n";
+        let full = migrate::migrate(old).expect("valid").expect("migrated");
+        Config::parse(&full).expect("valid");
+        for key in [
+            "max_tokens = ",
+            "base_url = ",
+            "timezone = ",
+            "viewer_port = ",
+        ] {
+            let line = full
+                .lines()
+                .find(|line| line.starts_with(key))
+                .expect("written by the migration");
+            let missing = full.replace(&format!("{line}\n"), "");
+            assert!(Config::parse(&missing).is_err(), "{key} has no default");
+        }
+    }
+
+    #[test]
     fn rejects_missing_key_unknown_fields_and_open_bot() {
         assert!(Config::parse("[model]\nname = \"x\"").is_err());
         let typo = "[model]\nnmae = \"x\"\n[opencode-go]\napi_key = \"k\"";
         assert!(Config::parse(typo).is_err());
-        let old_format = "[model]\nprovider = \"anthropic\"\n[opencode-go]\napi_key = \"k\"";
-        assert!(Config::parse(old_format).is_err());
+        let missing = "[model]\nprovider = \"anthropic\"\n[opencode-go]\napi_key = \"k\"";
+        assert!(Config::parse(missing).is_err(), "no [anthropic] section");
         let open_bot =
             "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = []";
         assert!(Config::parse(open_bot).is_err());

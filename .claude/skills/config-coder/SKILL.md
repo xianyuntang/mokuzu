@@ -12,9 +12,9 @@ A config change is not done until the TUI, docs, and tests match it.
 
 Change all of these in the same commit:
 
-1. **`crates/mokuzu/src/config.rs`**
+1. **`crates/mokuzu/src/config.rs`** and **`config/migrate.rs`**
    - Raw `File*` struct field (serde, `deny_unknown_fields`).
-   - Resolved `Config` field, with default and validation in `Config::parse`.
+   - Resolved `Config` field, with validation in `Config::parse`; no default (see below).
    - A test in `config.rs` tests for parsing and for rejecting bad values.
 2. **`crates/mokuzu/src/onboarding.rs` (the TUI)**
    - Field index const. Keep `MCP_FIRST` last and bump it; MCP Keep/Remove rows start there.
@@ -36,8 +36,22 @@ Change all of these in the same commit:
 ## No hidden keys
 
 Every key goes on the form, even rarely touched ones (they go in Advanced). A key missing from
-the form is silently reset by `mokuzu configure`. Write optional keys only when they differ from
-their default (see `ModelOptions`), so the file follows later changes to defaults.
+the form is silently reset by `mokuzu configure`.
+
+## No defaults; migrations instead
+
+Every setting is spelled out in the file. `File` fields are required (no `#[serde(default)]`, no
+`unwrap_or` in `Config::parse`); only whole optional features (a `[discord]` or
+`[tools.searxng]` section, an MCP server) may be absent. `render_toml` writes every key, turning
+an empty form field into its value (see `ModelOptions`).
+
+A format change (new key, rename, removal, new meaning) bumps `VERSION` in
+`crates/mokuzu/src/config/migrate.rs` and adds a step to `MIGRATIONS` that rewrites a file of the
+previous version with `toml_edit`, keeping comments: fill a new key with the value mokuzu used
+before, rename, or drop. `Config::load` runs pending steps on start and saves the result (the old
+file stays as `config.toml.bak`); `Config::parse` runs them in memory. Never edit a released
+step; add a new one. Test the step on an old file, and that `config.example.toml` and
+`render_toml` output need no migration.
 
 ## Verify
 
