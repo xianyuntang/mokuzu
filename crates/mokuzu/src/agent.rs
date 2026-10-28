@@ -1044,12 +1044,7 @@ impl Agent {
                     "fetch_url" => {
                         let args = &call.function.arguments;
                         if let Some(url) = args["url"].as_str() {
-                            let verb = if args["render"].as_bool().unwrap_or(false) {
-                                "rendering"
-                            } else {
-                                "reading"
-                            };
-                            io.note(&format!("🌐 {verb}: {url}")).await?;
+                            io.note(&format!("🌐 reading: {url}")).await?;
                         }
                         let (output, pages) = self.fetcher.run(args).await;
                         images.extend(pages.into_iter().map(UserContent::Image));
