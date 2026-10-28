@@ -1,33 +1,26 @@
-//! SQLite storage: hand-written migrations tracked by `PRAGMA user_version`, hand-written entities.
+//! SQLite storage: migrations from `migrations/` run by rusqlite_migration (tracked by
+//! `PRAGMA user_version`), hand-written entities.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
+use include_dir::{Dir, include_dir};
 use rusqlite::{Connection, Row, params};
+use rusqlite_migration::Migrations;
 use serde_json::Value;
 
 use crate::cron::NewJob;
 use crate::memory::Edit;
 use crate::todo::Edit as TodoEdit;
 
-/// Applied in order; `user_version` records how many have run. Append only, never edit.
-const MIGRATIONS: &[&str] = &[
-    include_str!("../migrations/0001_conversations.sql"),
-    include_str!("../migrations/0002_rig_messages.sql"),
-    include_str!("../migrations/0003_memories.sql"),
-    include_str!("../migrations/0004_memories_per_conversation.sql"),
-    include_str!("../migrations/0005_archived_messages.sql"),
-    include_str!("../migrations/0006_global_memories.sql"),
-    include_str!("../migrations/0007_jobs.sql"),
-    include_str!("../migrations/0008_job_names.sql"),
-    include_str!("../migrations/0009_memories_per_user.sql"),
-    include_str!("../migrations/0010_skills.sql"),
-    include_str!("../migrations/0011_skills_per_user.sql"),
-    include_str!("../migrations/0012_message_search.sql"),
-    include_str!("../migrations/0013_todos.sql"),
-    include_str!("../migrations/0014_drop_todo_due.sql"),
-];
+/// One `<number>-<name>/up.sql` per migration, applied in number order; `user_version` records how
+/// many have run. Add a directory with the next number; never edit one that shipped.
+static MIGRATIONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/migrations");
+
+fn migrations() -> Result<Migrations<'static>> {
+    Ok(Migrations::from_directory(&MIGRATIONS)?)
+}
 
 /// Row of `conversations`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -528,30 +521,20 @@ fn insert_messages(conn: &Connection, conversation_id: i64, messages: &[Value]) 
 }
 
 fn migrate(conn: &mut Connection) -> Result<()> {
-    let applied: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    let applied = usize::try_from(applied).context("negative user_version")?;
-    if applied > MIGRATIONS.len() {
-        bail!(
-            "database is at migration {applied}, newer than this binary ({}); upgrade mokuzu",
-            MIGRATIONS.len()
-        );
-    }
-    for (index, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
-        let version = index + 1;
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql)
-            .with_context(|| format!("migration {version} failed"))?;
-        tx.pragma_update(None, "user_version", i64::try_from(version)?)?;
-        tx.commit()?;
-        tracing::info!(version, "applied migration");
-    }
-    Ok(())
+    migrations()?
+        .to_latest(conn)
+        .context("failed to migrate the database")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn migrations_are_valid() {
+        migrations().expect("load").validate().expect("valid");
+    }
 
     #[tokio::test]
     async fn migrations_are_idempotent_and_messages_round_trip() {
@@ -564,7 +547,7 @@ mod tests {
                 .expect("version");
             assert_eq!(
                 usize::try_from(version).expect("positive"),
-                MIGRATIONS.len()
+                MIGRATIONS.dirs().count()
             );
         }
 
@@ -794,18 +777,19 @@ mod tests {
 
     #[test]
     fn memories_go_per_conversation_and_back_to_global() {
+        let migrations = migrations().expect("load");
         let mut conn = Connection::open_in_memory().expect("open");
         conn.pragma_update(None, "foreign_keys", true).expect("fk");
+        migrations.to_version(&mut conn, 3).expect("old migrations");
         let tx = conn.transaction().expect("tx");
-        for sql in &MIGRATIONS[..3] {
-            tx.execute_batch(sql).expect("old migrations");
-        }
         tx.execute_batch(
             "INSERT INTO conversations (key) VALUES ('terminal'), ('discord:1');
              INSERT INTO memories (content) VALUES ('fact');",
         )
         .expect("seed");
-        tx.execute_batch(MIGRATIONS[3]).expect("migration 4");
+        tx.commit().expect("commit");
+        migrations.to_version(&mut conn, 4).expect("migration 4");
+        let tx = conn.transaction().expect("tx");
         let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM memories WHERE content = 'fact'",
@@ -819,10 +803,11 @@ mod tests {
             "INSERT INTO memories (conversation_id, content) VALUES (2, 'only in discord');",
         )
         .expect("seed");
-        for sql in &MIGRATIONS[4..6] {
-            tx.execute_batch(sql).expect("later migrations");
-        }
-        let mut stmt = tx
+        tx.commit().expect("commit");
+        migrations
+            .to_version(&mut conn, 6)
+            .expect("later migrations");
+        let mut stmt = conn
             .prepare("SELECT content FROM memories ORDER BY id")
             .expect("prepare");
         let merged: Vec<String> = stmt

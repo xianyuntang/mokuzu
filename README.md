@@ -41,7 +41,7 @@ Mokuzu was called mitten before 0.5.0. Run `mitten update`, or the install comma
 `~/.local/share/mitten` to the mokuzu paths, and replaces mitten's background service with
 mokuzu's. Installs made with `cargo install` need `cargo install` again and one `mokuzu` run.
 
-Or build from source with Rust 1.88 or newer:
+Or build from source with Rust 1.95 or newer:
 
 ```sh
 cargo install --git https://github.com/xianyuntang/mokuzu mokuzu
