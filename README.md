@@ -4,8 +4,8 @@
 
 # mokuzu
 
-A personal agent that runs on your machine. Chat with it in the terminal or over Discord. It
-reads files and web pages, searches the web, remembers what you tell it, calls tools on MCP
+A personal agent that runs on your machine and talks with you over Discord, in text and in voice
+channels. It reads files and web pages, searches the web, remembers what you tell it, calls tools on MCP
 servers such as Linear, and runs scheduled jobs.
 
 The name is モクズ (mokuzu), from モクズガニ, the Japanese mitten crab; its hairy claws look like
@@ -51,16 +51,15 @@ cargo install --git https://github.com/xianyuntang/mokuzu mokuzu
 
 ```sh
 mokuzu configure   # full-screen setup; ←/→ switch pages, Save on any page
-mokuzu             # chat in the terminal
+mokuzu install     # run the Discord bot in the background
 ```
 
-`mokuzu configure` asks for your provider, API key, and model and writes
-`~/.config/mokuzu/config.toml`. The provider is OpenCode Go, or Anthropic's API for Claude with an
-Anthropic API key. Each provider keeps its own key, so switching between them never reuses one.
-Only the **Model** page is required.
-
-In the terminal chat, `/cast <request>` sends out a cast of crabs (see `cast_crabs` under Tools), `/browser` gives a link to a live view of mokuzu's desktop (see [Browser](#browser)), and `/exit` (or Ctrl-C) quits.
-Conversations are saved, so the next `mokuzu` picks up where you left off.
+`mokuzu configure` writes `~/.config/mokuzu/config.toml`. Its **Discord** page takes the bot token
+and your user ID (see [Discord](#discord)), and its **Model** page your provider, API key, and
+model: OpenCode Go, or Anthropic's API for Claude with an Anthropic API key. Each provider keeps
+its own key, so switching between them never reuses one. Those two pages are required; voice
+calls, web search, MCP servers, and the rest are optional. `mokuzu` alone runs the bot in the
+foreground, as `mokuzu serve` does.
 
 ## Discord
 
@@ -93,8 +92,8 @@ How it behaves:
   server ID, right-click the server with Developer Mode on.
 - A message in a server channel opens a thread, and each thread is its own conversation.
   Idle threads archive after an hour.
-- Each person has their own memory, shared by all of their threads and DMs; the terminal has one
-  of its own. Messages from different people are never merged into one turn.
+- Each person has their own memory, shared by all of their threads, DMs, and voice calls.
+  Messages from different people are never merged into one turn.
 - 👀 means received, ✅ done, ❌ failed. `/cast <request>` sends out a cast of crabs, and `/browser` gives a link to a live view of mokuzu's desktop. Both show up in Discord's `/` menu, and typing them as text works too.
 - Messages sent in quick succession, or while mokuzu is still answering, are merged and answered
   once.
@@ -107,7 +106,7 @@ How it behaves:
 
 ### Voice calls
 
-With a `[voice]` section (an OpenAI API key; set it on the **Discord** page of `mokuzu
+With a `[voice]` section (an OpenAI API key; set it on the **Voice** page of `mokuzu
 configure`), send `/voice` in a server while you are in one of its voice channels: mokuzu joins
 and talks with you through OpenAI's Realtime API. The realtime model keeps the conversation going
 and hands anything past small talk to mokuzu's agent, which answers in the channel you sent
@@ -141,7 +140,6 @@ Logs:
 
 - macOS: `~/Library/Logs/mokuzu.log`
 - Linux: `journalctl --user -u mokuzu -f`
-- Terminal chat: `~/.local/share/mokuzu/mokuzu.log`
 
 ## Tools
 
@@ -150,12 +148,12 @@ Logs:
 | `read_file`, `list_dir` | Reads files, including the text of PDF, `.docx`, and `.pptx` documents up to 20 MB, and lists directories. Hidden paths (like `~/.ssh` or `.env`) and Mokuzu's own config and database are refused. | No |
 | `fetch_url` | Reads a web page as text, or a linked PDF, `.docx`, or `.pptx` document up to 20 MB; a PDF's first 3 pages also come as images. Private network addresses are refused. | No |
 | `view_pdf` | Shows the model pages of a local or linked PDF as images, up to 10 per call, for layout, tables, figures, and scans that the text misses. Same path and address rules as `read_file` and `fetch_url`. | No |
-| `send_file` | Discord only. Sends a local file or a downloaded one (under 3 MB) as an attachment, e.g. an image the user asked to see. Same path and address rules as `read_file` and `fetch_url`. | No |
+| `send_file` | Sends a local file or a downloaded one (under 3 MB) as an attachment, e.g. an image the user asked to see. Same path and address rules as `read_file` and `fetch_url`. | No |
 | `web_search` | Searches through your SearXNG instance or the Brave Search API (pick one in `mokuzu configure`), optionally only recent results (`time_range`), news sites (`category`), or a date span (`after`, `before`; on SearXNG only Google engines honor it). Results show their publish date when known. | No |
 | `cast_crabs` | Cast of crabs mode (螃蟹群; a group of crabs is a cast, and mokuzu is モクズガニ, a mitten crab), modeled on Kimi's Agent Swarm and used when the model judges a task big enough, or whenever a message starts with `/cast <request>`. The model acts as an orchestrator and dispatches up to 10 named crabs per call, each with its own role and task, all running at once, while a live board shows what each one is doing. Crabs use only the read-only tools above, plus tools of MCP servers set to `approve = false`, and report back; the model sends more waves as needed and writes the answer. Needs web search configured. | No |
 | `memory` | Saves short notes about the person talking, loaded into their later conversations. | No |
-| `todo` | Keeps a todo list per person of things to follow until a condition is met. The agent adds them on its own when it starts something whose outcome isn't in yet (after opening a PR it follows the CI/CD, review, or merge; after a deploy or long job, its end; after sending a message, the reply), or when you ask it to watch something. Under `mokuzu serve`, a heartbeat wakes every 30 minutes for each Discord conversation with open todos, checks them in a fresh conversation, and posts there only when one is met, has failed, or needs you, then marks it done; otherwise it stays silent. No open todos, no model call. Anything at a set time (a reminder in 5 minutes, a task tomorrow) is a `cron` job instead. Todos written in the terminal are not checked by the heartbeat. | No |
-| `search_history` | Searches earlier messages of the same conversation (Discord channel or thread, or the terminal) that are no longer in context because a summary replaced them. Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. | No |
+| `todo` | Keeps a todo list per person of things to follow until a condition is met. The agent adds them on its own when it starts something whose outcome isn't in yet (after opening a PR it follows the CI/CD, review, or merge; after a deploy or long job, its end; after sending a message, the reply), or when you ask it to watch something. Under `mokuzu serve`, a heartbeat wakes every 30 minutes for each Discord conversation with open todos, checks them in a fresh conversation, and posts there only when one is met, has failed, or needs you, then marks it done; otherwise it stays silent. No open todos, no model call. Anything at a set time (a reminder in 5 minutes, a task tomorrow) is a `cron` job instead. | No |
+| `search_history` | Searches earlier messages of the same conversation (Discord channel or thread) that are no longer in context because a summary replaced them. Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. | No |
 | `skill` | Loads, saves, or removes skills: saved instructions for recurring tasks, kept in the database, one set per person like memory. Their names and descriptions are listed in each of that person's conversations; the model loads one when a task comes close to one, saves a finished multi-step task as a new one, and updates a skill when following it went wrong or you corrected it. Saving runs without asking and says what it saved. | Remove |
 | `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). | No |
 | `settings` | Reads or changes the model and a few limits. | Yes |

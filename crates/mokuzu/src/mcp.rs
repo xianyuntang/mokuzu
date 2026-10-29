@@ -207,7 +207,7 @@ async fn start(
                 .stderr(Stdio::piped())
                 .spawn()
                 .with_context(|| format!("failed to run {command}"))?;
-            // The chat screen owns the terminal, so the server's stderr goes to the log instead.
+            // The server's stderr goes to the log, tagged with its name.
             if let Some(stderr) = stderr {
                 let name = name.to_owned();
                 tokio::spawn(async move {

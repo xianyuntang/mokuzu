@@ -1,6 +1,5 @@
 mod agent;
 mod browser;
-mod chat;
 mod compact;
 mod config;
 mod cron;
@@ -27,14 +26,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 const USAGE: &str =
-    "usage: mokuzu [chat|serve|configure|install|uninstall|update|restart] [--config PATH] [--version]
+    "usage: mokuzu [serve|configure|install|uninstall|update|restart] [--config PATH] [--version]
 
-  chat       talk in this terminal (default)
-  configure  interactive setup: API key, model, Discord
-  serve      run the Discord bot from [discord]
+  serve      run the Discord bot (default)
+  configure  interactive setup: Discord, model, voice, tools
   install    run `mokuzu serve` in the background and keep it alive (launchd or systemd)
   uninstall  remove the background service
   update     install the latest release and restart the background service
@@ -60,8 +57,7 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             Some(
-                name @ ("chat" | "serve" | "configure" | "install" | "uninstall" | "update"
-                | "restart"),
+                name @ ("serve" | "configure" | "install" | "uninstall" | "update" | "restart"),
             ) if command.is_none() => command = Some(name.to_owned()),
             _ => bail!("unexpected argument {arg:?}\n\n{USAGE}"),
         }
@@ -81,7 +77,10 @@ async fn main() -> Result<()> {
             .context("cannot find home directory")?
             .join(".config/mokuzu/config.toml"),
     };
-    let config_path = legacy::migrate(config_path, command.as_deref() == Some("serve"))?;
+    let config_path = legacy::migrate(
+        config_path,
+        matches!(command.as_deref(), None | Some("serve")),
+    )?;
 
     if command.as_deref() == Some("configure") {
         onboarding::run(&config_path).await?;
@@ -99,45 +98,14 @@ async fn main() -> Result<()> {
         }
         return service::install(&config_path);
     }
-    // The chat screen owns the terminal, so its logs go to a file next to the database.
-    let writer = if command.as_deref() == Some("serve") {
-        BoxMakeWriter::new(std::io::stderr)
-    } else {
-        let path = config.database_path.with_extension("log");
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("failed to create {}", dir.display()))?;
-        }
-        let file = std::fs::File::options()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .with_context(|| format!("failed to open log file {}", path.display()))?;
-        BoxMakeWriter::new(std::sync::Mutex::new(file))
-    };
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_new(&config.log_level).context("invalid log.level in config")?,
         )
-        .with_writer(writer)
-        .with_ansi(command.as_deref() == Some("serve") && std::io::stderr().is_terminal())
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
-
-    if command.as_deref() == Some("serve") {
-        return discord::serve(config).await;
-    }
-    chat(config).await
-}
-
-async fn chat(config: config::Config) -> Result<()> {
-    if !std::io::stdout().is_terminal() {
-        bail!("mokuzu chat needs an interactive terminal");
-    }
-    let db = db::Db::open(&config.database_path)?;
-    let display = browser::desktop(config.browser_screen).await;
-    let mcp = std::sync::Arc::new(mcp::Mcp::connect(&config.mcp, display.as_deref()).await);
-    let agent = agent::Agent::new(config, db, mcp, "terminal").await?;
-    chat::run(agent).await
+    discord::serve(config).await
 }
 
 /// Picks rustls's crypto backend for the whole process. reqwest brings aws-lc-rs and songbird's

@@ -20,7 +20,7 @@ Change all of these in the same commit:
    - Field index const. Keep `MCP_FIRST` last and bump it; MCP Keep/Remove rows start there.
    - `fields.push(field(step, label, kind, value))` in `Form::new`, prefilled from `current`
      (the loaded `Config`), else the same default `config.rs` uses.
-     - Pick the step from `STEPS` that fits; general settings go in Advanced (step 5).
+     - Pick the `STEP_*` const that fits; general settings go in `STEP_ADVANCED`.
      - `Kind::Select` for a small fixed set (use `options_with` so hand-edited values survive),
        `Kind::Secret` for tokens and passwords, `Kind::Text` otherwise.
    - Conditional visibility in `Form::shown` if it depends on another field.

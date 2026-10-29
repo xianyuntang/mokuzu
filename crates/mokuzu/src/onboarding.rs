@@ -49,7 +49,13 @@ const ENABLED: &str = "Enabled";
 const DISABLED: &str = "Disabled";
 const SEARXNG: &str = "SearXNG";
 const BRAVE: &str = "Brave Search API";
-const STEPS: [&str; 5] = ["Model", "Discord", "Web search", "MCP", "Advanced"];
+const STEPS: [&str; 6] = ["Discord", "Model", "Voice", "Web search", "MCP", "Advanced"];
+const STEP_DISCORD: usize = 0;
+const STEP_MODEL: usize = 1;
+const STEP_VOICE: usize = 2;
+const STEP_SEARCH: usize = 3;
+const STEP_MCP: usize = 4;
+const STEP_ADVANCED: usize = 5;
 const NO: &str = "No";
 const YES: &str = "Yes";
 const EVERY_MESSAGE: &str = "Every message";
@@ -104,49 +110,48 @@ const PROVIDER: usize = 0;
 const KEY: usize = 1;
 const MODEL: usize = 2;
 const CUSTOM_MODEL: usize = 3;
-const DISCORD: usize = 4;
-const TOKEN: usize = 5;
-const USERS: usize = 6;
-const SEARCH: usize = 7;
-const SEARCH_URL: usize = 8;
-const SEARCH_USER: usize = 9;
-const SEARCH_PASSWORD: usize = 10;
-const LOG: usize = 11;
-const DATABASE: usize = 12;
-const MCP_ADD: usize = 13;
-const MCP_NAME: usize = 14;
-const MCP_COMMAND: usize = 15;
-const MCP_ARGS: usize = 16;
-const MCP_ENV: usize = 17;
-const MCP_URL: usize = 18;
-const MCP_TOKEN: usize = 19;
-const MCP_APPROVE: usize = 20;
-const APPROVAL: usize = 21;
-const REVIEWER: usize = 22;
-const TIMEZONE: usize = 23;
-const BRAVE_KEY: usize = 24;
-const GUILD_ADD: usize = 25;
-const GUILD_ID: usize = 26;
-const GUILD_USERS: usize = 27;
-const GUILD_REPLY: usize = 28;
-const SEARCH_RESULTS: usize = 29;
-const API: usize = 30;
-const BASE_URL: usize = 31;
-const MAX_TOKENS: usize = 32;
-const COMPACT_AT: usize = 33;
-const BROWSER_WIDTH: usize = 34;
-const BROWSER_HEIGHT: usize = 35;
-const VIEWER_PORT: usize = 36;
-const VOICE: usize = 37;
-const VOICE_KEY: usize = 38;
-const VOICE_MODEL: usize = 39;
+const TOKEN: usize = 4;
+const USERS: usize = 5;
+const SEARCH: usize = 6;
+const SEARCH_URL: usize = 7;
+const SEARCH_USER: usize = 8;
+const SEARCH_PASSWORD: usize = 9;
+const LOG: usize = 10;
+const DATABASE: usize = 11;
+const MCP_ADD: usize = 12;
+const MCP_NAME: usize = 13;
+const MCP_COMMAND: usize = 14;
+const MCP_ARGS: usize = 15;
+const MCP_ENV: usize = 16;
+const MCP_URL: usize = 17;
+const MCP_TOKEN: usize = 18;
+const MCP_APPROVE: usize = 19;
+const APPROVAL: usize = 20;
+const REVIEWER: usize = 21;
+const TIMEZONE: usize = 22;
+const BRAVE_KEY: usize = 23;
+const GUILD_ADD: usize = 24;
+const GUILD_ID: usize = 25;
+const GUILD_USERS: usize = 26;
+const GUILD_REPLY: usize = 27;
+const SEARCH_RESULTS: usize = 28;
+const API: usize = 29;
+const BASE_URL: usize = 30;
+const MAX_TOKENS: usize = 31;
+const COMPACT_AT: usize = 32;
+const BROWSER_WIDTH: usize = 33;
+const BROWSER_HEIGHT: usize = 34;
+const VIEWER_PORT: usize = 35;
+const VOICE: usize = 36;
+const VOICE_KEY: usize = 37;
+const VOICE_LANGUAGE: usize = 38;
+const VOICE_CHANNELS: usize = 39;
 const VOICE_NAME: usize = 40;
-const VOICE_URL: usize = 41;
-const VOICE_CHANNELS: usize = 42;
-const VOICE_LANGUAGE: usize = 43;
+const VOICE_MODEL: usize = 41;
+const VOICE_URL: usize = 42;
 /// First of the rows for already configured MCP servers, followed by the configured Discord
 /// servers' rows.
-const MCP_FIRST: usize = 44;
+const MCP_FIRST: usize = 43;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -228,13 +233,13 @@ impl Form {
         model_options.push(CUSTOM.to_owned());
         let mut fields = vec![
             field(
-                0,
+                STEP_MODEL,
                 "Provider",
                 Kind::Select(options(&[OPENCODE_GO, ANTHROPIC])),
                 provider_name(provider).to_owned(),
             ),
             field(
-                0,
+                STEP_MODEL,
                 "API key",
                 Kind::Secret,
                 current
@@ -242,13 +247,13 @@ impl Form {
                     .unwrap_or_default(),
             ),
             field(
-                0,
+                STEP_MODEL,
                 "Model",
                 Kind::Select(model_options),
                 if preset { model } else { CUSTOM }.to_owned(),
             ),
             field(
-                0,
+                STEP_MODEL,
                 "Model ID",
                 Kind::Text,
                 if preset {
@@ -258,13 +263,7 @@ impl Form {
                 },
             ),
             field(
-                1,
-                "Discord bot",
-                Kind::Select(options(&[DISABLED, ENABLED])),
-                if discord.is_some() { ENABLED } else { DISABLED }.to_owned(),
-            ),
-            field(
-                1,
+                STEP_DISCORD,
                 "Bot token",
                 Kind::Secret,
                 discord
@@ -272,7 +271,7 @@ impl Form {
                     .unwrap_or_default(),
             ),
             field(
-                1,
+                STEP_DISCORD,
                 "Allowed user IDs",
                 Kind::Text,
                 discord
@@ -280,7 +279,7 @@ impl Form {
                     .unwrap_or_default(),
             ),
             field(
-                2,
+                STEP_SEARCH,
                 "Web search",
                 Kind::Select(options(&[DISABLED, SEARXNG, BRAVE])),
                 match search {
@@ -291,13 +290,13 @@ impl Form {
                 .to_owned(),
             ),
             field(
-                2,
+                STEP_SEARCH,
                 "SearXNG URL",
                 Kind::Text,
                 searxng.map(|s| s.url.clone()).unwrap_or_default(),
             ),
             field(
-                2,
+                STEP_SEARCH,
                 "Username",
                 Kind::Text,
                 search_auth
@@ -305,7 +304,7 @@ impl Form {
                     .unwrap_or_default(),
             ),
             field(
-                2,
+                STEP_SEARCH,
                 "Password",
                 Kind::Secret,
                 search_auth
@@ -313,31 +312,31 @@ impl Form {
                     .unwrap_or_default(),
             ),
             field(
-                4,
+                STEP_ADVANCED,
                 "Log level",
                 Kind::Select(options_with(&["error", "warn", "info", "debug"], log)),
                 log.to_owned(),
             ),
             field(
-                4,
+                STEP_ADVANCED,
                 "Database",
                 Kind::Text,
                 database.to_string_lossy().into_owned(),
             ),
             field(
-                3,
+                STEP_MCP,
                 "Add server",
                 Kind::Select(options(&[NO, STDIO, HTTP])),
                 NO.to_owned(),
             ),
-            field(3, "Name", Kind::Text, String::new()),
-            field(3, "Command", Kind::Text, String::new()),
-            field(3, "Arguments", Kind::Text, String::new()),
-            field(3, "Env (K=V, …)", Kind::Secret, String::new()),
-            field(3, "URL", Kind::Text, String::new()),
-            field(3, "Token", Kind::Secret, String::new()),
+            field(STEP_MCP, "Name", Kind::Text, String::new()),
+            field(STEP_MCP, "Command", Kind::Text, String::new()),
+            field(STEP_MCP, "Arguments", Kind::Text, String::new()),
+            field(STEP_MCP, "Env (K=V, …)", Kind::Secret, String::new()),
+            field(STEP_MCP, "URL", Kind::Text, String::new()),
+            field(STEP_MCP, "Token", Kind::Secret, String::new()),
             field(
-                3,
+                STEP_MCP,
                 "Approval",
                 Kind::Select(options(&[ASK, NEVER_ASK])),
                 ASK.to_owned(),
@@ -345,7 +344,7 @@ impl Form {
         ];
         let auto = current.is_some_and(|c| matches!(c.approval, config::Approval::Auto { .. }));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "Approval",
             Kind::Select(options(&[ASK_ME, AUTO])),
             if auto { AUTO } else { ASK_ME }.to_owned(),
@@ -357,15 +356,20 @@ impl Form {
         let mut reviewers = vec![SAME_MODEL];
         reviewers.extend(models(provider));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "Reviewer model",
             Kind::Select(options_with(&reviewers, reviewer)),
             reviewer.to_owned(),
         ));
         let zone = current.map_or_else(config::system_timezone, |c| c.timezone);
-        fields.push(field(4, "Time zone", Kind::Text, zone.name().to_owned()));
         fields.push(field(
-            2,
+            STEP_ADVANCED,
+            "Time zone",
+            Kind::Text,
+            zone.name().to_owned(),
+        ));
+        fields.push(field(
+            STEP_SEARCH,
             "Brave API key",
             Kind::Secret,
             brave
@@ -373,21 +377,26 @@ impl Form {
                 .unwrap_or_default(),
         ));
         fields.push(field(
-            1,
+            STEP_DISCORD,
             "Add server",
             Kind::Select(options(&[NO, YES])),
             NO.to_owned(),
         ));
-        fields.push(field(1, "Server ID", Kind::Text, String::new()));
-        fields.push(field(1, "Server user IDs", Kind::Text, String::new()));
+        fields.push(field(STEP_DISCORD, "Server ID", Kind::Text, String::new()));
         fields.push(field(
-            1,
+            STEP_DISCORD,
+            "Server user IDs",
+            Kind::Text,
+            String::new(),
+        ));
+        fields.push(field(
+            STEP_DISCORD,
             "Reply to",
             Kind::Select(options(&[EVERY_MESSAGE, MENTIONED])),
             EVERY_MESSAGE.to_owned(),
         ));
         fields.push(field(
-            2,
+            STEP_SEARCH,
             "Results",
             Kind::Text,
             search.map_or(5, config::Search::results).to_string(),
@@ -399,13 +408,13 @@ impl Form {
         let mut apis = vec![API_AUTO];
         apis.extend(Api::ALL.map(Api::name));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "API format",
             Kind::Select(options(&apis)),
             api.to_owned(),
         ));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "Base URL",
             Kind::Text,
             current
@@ -413,7 +422,7 @@ impl Form {
                 .to_owned(),
         ));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "Max output tokens",
             Kind::Text,
             current
@@ -421,7 +430,7 @@ impl Form {
                 .to_string(),
         ));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
             "Compact at tokens",
             Kind::Text,
             current
@@ -429,10 +438,20 @@ impl Form {
                 .to_string(),
         ));
         let screen = current.map_or(config::DEFAULT_SCREEN, |c| c.browser_screen);
-        fields.push(field(4, "Browser width", Kind::Text, screen.0.to_string()));
-        fields.push(field(4, "Browser height", Kind::Text, screen.1.to_string()));
         fields.push(field(
-            4,
+            STEP_ADVANCED,
+            "Browser width",
+            Kind::Text,
+            screen.0.to_string(),
+        ));
+        fields.push(field(
+            STEP_ADVANCED,
+            "Browser height",
+            Kind::Text,
+            screen.1.to_string(),
+        ));
+        fields.push(field(
+            STEP_ADVANCED,
             "Browser viewer port",
             Kind::Text,
             current
@@ -440,14 +459,15 @@ impl Form {
                 .to_string(),
         ));
         let voice = current.and_then(|c| c.voice.as_ref());
+        let voice_name = voice.map_or(config::REALTIME_VOICES[0], |v| v.voice.as_str());
         fields.push(field(
-            1,
+            STEP_VOICE,
             "Voice calls",
             Kind::Select(options(&[DISABLED, ENABLED])),
             if voice.is_some() { ENABLED } else { DISABLED }.to_owned(),
         ));
         fields.push(field(
-            1,
+            STEP_VOICE,
             "OpenAI API key",
             Kind::Secret,
             voice
@@ -455,40 +475,39 @@ impl Form {
                 .unwrap_or_default(),
         ));
         fields.push(field(
-            1,
+            STEP_VOICE,
+            "Language",
+            Kind::Text,
+            voice
+                .map_or(config::DEFAULT_VOICE_LANGUAGE, |v| v.language.as_str())
+                .to_owned(),
+        ));
+        fields.push(field(
+            STEP_VOICE,
+            "Auto-join channels",
+            Kind::Text,
+            voice.map(|v| join_ids(&v.channels)).unwrap_or_default(),
+        ));
+        fields.push(field(
+            STEP_VOICE,
+            "Voice",
+            Kind::Select(options_with(&config::REALTIME_VOICES, voice_name)),
+            voice_name.to_owned(),
+        ));
+        fields.push(field(
+            STEP_VOICE,
             "Realtime model",
             Kind::Text,
             voice
                 .map_or(config::DEFAULT_REALTIME_MODEL, |v| v.model.as_str())
                 .to_owned(),
         ));
-        let voice_name = voice.map_or(config::REALTIME_VOICES[0], |v| v.voice.as_str());
         fields.push(field(
-            1,
-            "Voice",
-            Kind::Select(options_with(&config::REALTIME_VOICES, voice_name)),
-            voice_name.to_owned(),
-        ));
-        fields.push(field(
-            1,
+            STEP_VOICE,
             "Realtime URL",
             Kind::Text,
             voice
                 .map_or(config::DEFAULT_REALTIME_URL, |v| v.url.as_str())
-                .to_owned(),
-        ));
-        fields.push(field(
-            1,
-            "Auto-join channels",
-            Kind::Text,
-            voice.map(|v| join_ids(&v.channels)).unwrap_or_default(),
-        ));
-        fields.push(field(
-            1,
-            "Language",
-            Kind::Text,
-            voice
-                .map_or(config::DEFAULT_VOICE_LANGUAGE, |v| v.language.as_str())
                 .to_owned(),
         ));
         let mcp_names: Vec<String> = current
@@ -496,7 +515,7 @@ impl Form {
             .unwrap_or_default();
         fields.extend(mcp_names.iter().map(|name| {
             field(
-                3,
+                STEP_MCP,
                 name,
                 Kind::Select(options(&[KEEP, REMOVE])),
                 KEEP.to_owned(),
@@ -520,7 +539,7 @@ impl Form {
                 reply.to_lowercase()
             );
             field(
-                1,
+                STEP_DISCORD,
                 &id.to_string(),
                 Kind::Select(vec![keep.clone(), REMOVE.to_owned()]),
                 keep,
@@ -528,8 +547,8 @@ impl Form {
         }));
         Ok(Self {
             fields,
-            step: 0,
-            focus: KEY,
+            step: STEP_DISCORD,
+            focus: TOKEN,
             menu: None,
             reveal: false,
             status: Line::default(),
@@ -561,15 +580,9 @@ impl Form {
         field.step == self.step
             && match i {
                 CUSTOM_MODEL => self.fields[MODEL].value == CUSTOM,
-                TOKEN | USERS | GUILD_ADD | VOICE => self.fields[DISCORD].value == ENABLED,
                 VOICE_KEY | VOICE_MODEL | VOICE_NAME | VOICE_URL | VOICE_CHANNELS
-                | VOICE_LANGUAGE => {
-                    self.fields[DISCORD].value == ENABLED && self.fields[VOICE].value == ENABLED
-                }
-                GUILD_ID | GUILD_USERS | GUILD_REPLY => {
-                    self.fields[DISCORD].value == ENABLED && self.fields[GUILD_ADD].value == YES
-                }
-                i if i >= self.guild_first() => self.fields[DISCORD].value == ENABLED,
+                | VOICE_LANGUAGE => self.fields[VOICE].value == ENABLED,
+                GUILD_ID | GUILD_USERS | GUILD_REPLY => self.fields[GUILD_ADD].value == YES,
                 SEARCH_URL | SEARCH_USER | SEARCH_PASSWORD => self.fields[SEARCH].value == SEARXNG,
                 SEARCH_RESULTS => self.fields[SEARCH].value != DISABLED,
                 BRAVE_KEY => self.fields[SEARCH].value == BRAVE,
@@ -773,18 +786,20 @@ impl Form {
     /// Validates the fields of `step` only.
     fn check_step(&self, step: usize) -> std::result::Result<(), String> {
         match step {
-            0 => {
+            STEP_DISCORD => {
+                self.discord()?;
+            }
+            STEP_MODEL => {
                 self.required(KEY)?;
                 self.model()?;
             }
-            1 => {
-                self.discord()?;
+            STEP_VOICE => {
                 self.voice()?;
             }
-            2 => {
+            STEP_SEARCH => {
                 self.search()?;
             }
-            3 => {
+            STEP_MCP => {
                 self.mcp()?;
             }
             _ => {
@@ -883,9 +898,9 @@ impl Form {
         Ok(zone)
     }
 
-    /// The `[voice]` section; calls run through the Discord bot, so only with it on.
+    /// The `[voice]` section, when calls are on.
     fn voice(&self) -> std::result::Result<Option<VoiceAnswers>, String> {
-        if self.fields[DISCORD].value != ENABLED || self.fields[VOICE].value != ENABLED {
+        if self.fields[VOICE].value != ENABLED {
             return Ok(None);
         }
         let url = self.required(VOICE_URL)?;
@@ -902,15 +917,12 @@ impl Form {
         }))
     }
 
-    fn discord(&self) -> std::result::Result<Option<DiscordAnswers>, String> {
-        if self.fields[DISCORD].value != ENABLED {
-            return Ok(None);
-        }
-        Ok(Some(DiscordAnswers {
+    fn discord(&self) -> std::result::Result<DiscordAnswers, String> {
+        Ok(DiscordAnswers {
             token: self.required(TOKEN)?,
             allowed_users: parse_user_ids(&self.value(USERS))?,
             guilds: self.guild_answers()?,
-        }))
+        })
     }
 
     /// Configured servers not set to Remove, plus the one being added.
@@ -1332,7 +1344,6 @@ fn help(i: usize) -> (&'static str, &'static str) {
         KEY => "Your OpenCode Go or Anthropic API key. ^R shows it.",
         MODEL => "The model Mokuzu talks with. Pick Custom… to type another model ID.",
         CUSTOM_MODEL => "A model ID your provider serves.",
-        DISCORD => "Lets `mokuzu serve` chat through a Discord bot, by DM and in server channels.",
         TOKEN => {
             "Bot token from the Discord Developer Portal › Bot. Turn on Message Content Intent \
              there too, or the bot cannot connect."
@@ -1514,7 +1525,7 @@ struct Answers {
     other_keys: Vec<(Provider, String, String)>,
     model: String,
     api_key: String,
-    discord: Option<DiscordAnswers>,
+    discord: DiscordAnswers,
     voice: Option<VoiceAnswers>,
     search: Option<SearchAnswers>,
     log_level: String,
@@ -1661,23 +1672,22 @@ fn render_toml(answers: &Answers) -> String {
         )),
         None => {}
     }
-    if let Some(discord) = &answers.discord {
+    let discord = &answers.discord;
+    text.push_str(&format!(
+        "\n[discord]\ntoken = {}\nallowed_users = [{}]\n",
+        quote(&discord.token),
+        join_ids(&discord.allowed_users)
+    ));
+    for guild in &discord.guilds {
         text.push_str(&format!(
-            "\n[discord]\ntoken = {}\nallowed_users = [{}]\n",
-            quote(&discord.token),
-            join_ids(&discord.allowed_users)
+            "\n[discord.guilds.{}]\nallowed_users = {}\n",
+            guild.id,
+            match &guild.allowed_users {
+                config::Users::Everyone => quote("*"),
+                config::Users::Only(ids) => format!("[{}]", join_ids(ids)),
+            }
         ));
-        for guild in &discord.guilds {
-            text.push_str(&format!(
-                "\n[discord.guilds.{}]\nallowed_users = {}\n",
-                guild.id,
-                match &guild.allowed_users {
-                    config::Users::Everyone => quote("*"),
-                    config::Users::Only(ids) => format!("[{}]", join_ids(ids)),
-                }
-            ));
-            text.push_str(&format!("mention_only = {}\n", guild.mention_only));
-        }
+        text.push_str(&format!("mention_only = {}\n", guild.mention_only));
     }
     if let Some(voice) = &answers.voice {
         text.push_str(&format!(
@@ -1764,7 +1774,7 @@ mod tests {
             other_keys: Vec::new(),
             model: "qwen3.8-max".to_owned(),
             api_key: "sk-\"quoted\"".to_owned(),
-            discord: Some(DiscordAnswers {
+            discord: DiscordAnswers {
                 token: "tok".to_owned(),
                 allowed_users: vec![1, 22],
                 guilds: vec![
@@ -1779,7 +1789,7 @@ mod tests {
                         allowed_users: config::Users::Everyone,
                     },
                 ],
-            }),
+            },
             voice: Some(VoiceAnswers {
                 api_key: "sk-voice".to_owned(),
                 url: config::DEFAULT_REALTIME_URL.to_owned(),
@@ -1846,18 +1856,18 @@ mod tests {
         assert_eq!(reopened.value(VOICE), ENABLED);
         assert_eq!(reopened.value(VOICE_KEY), "sk-voice");
         assert_eq!(reopened.value(VOICE_CHANNELS), "300, 301");
-        reopened.step = 1;
+        reopened.step = STEP_VOICE;
         assert!(reopened.visible().contains(&VOICE_MODEL));
         reopened.fields[VOICE_URL].value = "https://not-a-socket".to_owned();
         assert!(
-            reopened.check_step(1).is_err(),
+            reopened.check_step(STEP_VOICE).is_err(),
             "the endpoint is a WebSocket"
         );
-        reopened.fields[VOICE_URL].value = config::DEFAULT_REALTIME_URL.to_owned();
-        reopened.fields[DISCORD].value = DISABLED.to_owned();
-        assert!(!reopened.visible().contains(&VOICE), "calls need the bot");
+        reopened.fields[VOICE].value = DISABLED.to_owned();
+        assert!(!reopened.visible().contains(&VOICE_MODEL));
         assert!(reopened.voice().expect("valid").is_none());
-        reopened.fields[DISCORD].value = ENABLED.to_owned();
+        reopened.fields[VOICE].value = ENABLED.to_owned();
+        reopened.fields[VOICE_URL].value = config::DEFAULT_REALTIME_URL.to_owned();
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
         assert_eq!(reopened.value(VIEWER_PORT), "8765");
@@ -1893,10 +1903,10 @@ mod tests {
     fn brave_choice_renders_its_section() {
         let mut form = Form::new(None).expect("form");
         form.fields[SEARCH].value = BRAVE.to_owned();
-        form.step = 2;
+        form.step = STEP_SEARCH;
         assert!(form.visible().contains(&BRAVE_KEY));
         assert!(!form.visible().contains(&SEARCH_URL));
-        assert!(form.check_step(2).is_err(), "Brave needs a key");
+        assert!(form.check_step(STEP_SEARCH).is_err(), "Brave needs a key");
         form.fields[BRAVE_KEY].value = "bk".to_owned();
         let Some(answers) = form.search().expect("valid") else {
             panic!("search on");
@@ -1906,7 +1916,11 @@ mod tests {
             other_keys: Vec::new(),
             model: "m".to_owned(),
             api_key: "k".to_owned(),
-            discord: None,
+            discord: DiscordAnswers {
+                token: "t".to_owned(),
+                allowed_users: vec![1],
+                guilds: Vec::new(),
+            },
             voice: None,
             search: Some(answers),
             log_level: "warn".to_owned(),
@@ -1935,9 +1949,11 @@ mod tests {
         assert_eq!(form.value(KEY), "", "no key carried over");
         assert_eq!(form.value(MODEL), "claude-opus-5-5");
         assert_eq!(form.value(BASE_URL), config::ANTHROPIC_BASE_URL);
-        form.step = 4;
+        form.step = STEP_ADVANCED;
         assert!(!form.visible().contains(&API), "Anthropic has one format");
         form.fields[KEY].value = "sk-ant".to_owned();
+        form.fields[TOKEN].value = "t".to_owned();
+        form.fields[USERS].value = "1".to_owned();
         let answers = form.answers().expect("valid");
         assert_eq!(
             answers.options.base_url,
@@ -1971,6 +1987,14 @@ mod tests {
     #[test]
     fn steps_validate_and_hide_conditional_fields() {
         let mut form = Form::new(None).expect("form");
+        assert_eq!(form.step, STEP_DISCORD, "the bot comes first");
+        assert!(form.visible().contains(&TOKEN));
+        assert_eq!(
+            form.check_step(form.step).err().as_deref(),
+            Some("Bot token is required")
+        );
+
+        form.step = STEP_MODEL;
         assert_eq!(
             form.check_step(form.step).err().as_deref(),
             Some("API key is required")
@@ -1984,12 +2008,9 @@ mod tests {
             "custom model needs an ID"
         );
         form.fields[CUSTOM_MODEL].value = "qwen-next".to_owned();
-        form.check_step(form.step).expect("step 1 valid");
+        form.check_step(form.step).expect("model step valid");
 
-        form.step = 1;
-        assert!(!form.visible().contains(&TOKEN));
-        form.fields[DISCORD].value = ENABLED.to_owned();
-        assert!(form.visible().contains(&TOKEN));
+        form.step = STEP_DISCORD;
         form.fields[TOKEN].value = "t".to_owned();
         form.fields[USERS].value = "12, x".to_owned();
         assert!(form.check_step(form.step).is_err());
@@ -2016,7 +2037,14 @@ mod tests {
         form.fields[GUILD_REPLY].value = MENTIONED.to_owned();
         form.check_step(form.step).expect("discord step valid");
 
-        form.step = 2;
+        form.step = STEP_VOICE;
+        assert!(
+            !form.visible().contains(&VOICE_KEY),
+            "calls are off by default"
+        );
+        form.check_step(form.step).expect("voice step valid");
+
+        form.step = STEP_SEARCH;
         assert!(!form.visible().contains(&SEARCH_URL));
         form.fields[SEARCH].value = SEARXNG.to_owned();
         assert!(form.visible().contains(&SEARCH_PASSWORD));
@@ -2035,7 +2063,7 @@ mod tests {
         form.fields[SEARCH_RESULTS].value = "8".to_owned();
         form.check_step(form.step).expect("search step valid");
 
-        form.step = 4;
+        form.step = STEP_ADVANCED;
         form.fields[TIMEZONE].value = "Taipei".to_owned();
         assert!(form.check_step(form.step).is_err(), "not an IANA name");
         form.fields[TIMEZONE].value = "Asia/Taipei".to_owned();
@@ -2065,7 +2093,7 @@ mod tests {
 
         let answers = form.answers().expect("all steps valid");
         assert_eq!(answers.model, "qwen-next");
-        let discord = answers.discord.expect("discord");
+        let discord = answers.discord;
         assert_eq!(discord.allowed_users, [12, 34]);
         assert_eq!(
             discord
@@ -2081,6 +2109,7 @@ mod tests {
     fn draws_step_and_opens_dropdown() {
         let mut form = Form::new(None).expect("form");
         form.fields[KEY].value = "sk-secret".to_owned();
+        form.step = STEP_MODEL;
         form.focus = MODEL;
         form.open_menu();
         let mut terminal =
