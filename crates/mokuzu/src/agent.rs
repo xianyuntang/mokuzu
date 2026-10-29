@@ -1,4 +1,4 @@
-//! Agent loop over OpenCode Go via Rig's provider clients, with read-only local tools.
+//! Agent loop over Rig's provider clients, with read-only local tools.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -278,8 +278,8 @@ When the obvious interpretation is clear, act; ask only when the ambiguity chang
 /// only changes the tail. Rebuilt before every turn, so memory saved in any conversation shows up
 /// on the next message everywhere; the text only changes when memory or settings do.
 /// Web search guidance is added when that tool is configured.
-/// `user` picks whose memory and skills load: a Discord user ID, or `None` for the terminal.
-async fn system_prompt(db: &Db, config: &Config, user: Option<u64>) -> Result<String> {
+/// `user` picks whose memory and skills load.
+async fn system_prompt(db: &Db, config: &Config, user: u64) -> Result<String> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let memories = db.memories(user).await.context("failed to load memory")?;
     let skills = db.skills(user).await.context("failed to load skills")?;
@@ -436,17 +436,18 @@ pub struct Agent {
     /// Shared by every conversation in the process.
     mcp: Arc<Mcp>,
     key: String,
-    /// Who sent the current turn: a Discord user ID, or `None` for the terminal. Picks the memory.
-    user: Option<u64>,
+    /// Discord user ID of who sent the current turn; picks the memory. Set by `run_turn`.
+    user: u64,
     /// Conversation key new todos are posted about in: `key`, unless this conversation posts
     /// somewhere else (a job or heartbeat run).
     posts_to: String,
+    /// Rebuilt by `run_turn` for its sender.
     system: String,
     messages: Vec<Message>,
 }
 
 impl Agent {
-    /// Resumes the stored conversation named `key` (e.g. `terminal`, `discord:<channel>`).
+    /// Resumes the stored conversation named `key` (e.g. `discord:<channel>`, `cron:<job>`).
     pub async fn new(config: Config, db: Db, mcp: Arc<Mcp>, key: &str) -> Result<Self> {
         let conversation = db.conversation(key).await?;
         let messages = match db
@@ -463,7 +464,6 @@ impl Agent {
                 Vec::new()
             }
         };
-        let system = system_prompt(&db, &config, None).await?;
         let search = config.search.clone().map(WebSearch::new).transpose()?;
         Ok(Self {
             model: Model::new(&config, &format!("mokuzu-{}", conversation.id))?,
@@ -476,8 +476,8 @@ impl Agent {
             mcp,
             key: key.to_owned(),
             posts_to: key.to_owned(),
-            user: None,
-            system,
+            user: 0,
+            system: String::new(),
             messages,
         })
     }
@@ -761,13 +761,13 @@ impl Agent {
     /// Runs one user turn to completion, looping while the model calls tools, then saves it.
     /// On failure the turn is cut back to its last complete tool round so the history stays valid;
     /// rounds whose commands already ran are kept, so the model knows what changed.
-    /// `images` go to the model alongside `prompt`. `user` sent it: a Discord user ID, or `None`
-    /// for the terminal; their memory is the one loaded and edited.
+    /// `images` go to the model alongside `prompt`. `user` sent it, as a Discord user ID; their
+    /// memory is the one loaded and edited.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
         images: Vec<Image>,
-        user: Option<u64>,
+        user: u64,
         io: &mut impl Io,
     ) -> Result<()> {
         if prompt.trim() == browser::BROWSER_COMMAND {
@@ -1252,11 +1252,11 @@ mod tests {
             file.display()
         );
         agent
-            .run_turn(&prompt, Vec::new(), None, &mut Print)
+            .run_turn(&prompt, Vec::new(), 1, &mut Print)
             .await
             .expect("first turn");
         agent
-            .run_turn("Spell it backwards.", Vec::new(), None, &mut Print)
+            .run_turn("Spell it backwards.", Vec::new(), 1, &mut Print)
             .await
             .expect("second turn");
     }

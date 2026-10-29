@@ -288,7 +288,7 @@ mod tests {
             name: "News".to_owned(),
             target: "discord:1".to_owned(),
             schedule: Some("0 9 * * *".to_owned()),
-            user: Some(7),
+            user: 7,
             prompt: "old".to_owned(),
             next_run: 42,
         };
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(once.prompt, "old");
         assert_eq!(once.schedule, None);
         assert_eq!(once.next_run, at("2026-10-02 10:15").timestamp());
-        assert_eq!((once.id, once.user), (1, Some(7)));
+        assert_eq!((once.id, once.user), (1, 7));
 
         assert!(
             revise(&job, &json!({"id": 1}), now).is_err(),
@@ -324,7 +324,7 @@ mod tests {
             name: name.to_owned(),
             target: "discord:1".to_owned(),
             schedule: None,
-            user: None,
+            user: 7,
             prompt: "p".to_owned(),
             next_run: 0,
         };

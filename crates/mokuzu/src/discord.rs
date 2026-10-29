@@ -181,19 +181,15 @@ async fn start_heartbeats(
     mcp: &Arc<Mcp>,
     http: &Arc<Http>,
 ) -> Result<()> {
-    let mut groups: HashMap<(Option<u64>, String), Vec<Todo>> = HashMap::new();
+    let mut groups: HashMap<(u64, String), Vec<Todo>> = HashMap::new();
     for todo in db.all_todos().await? {
-        // Terminal todos have nowhere to post; they wait for the user's next terminal session.
-        if todo.target.starts_with("discord:") {
-            groups
-                .entry((todo.user, todo.target.clone()))
-                .or_default()
-                .push(todo);
-        }
+        groups
+            .entry((todo.user, todo.target.clone()))
+            .or_default()
+            .push(todo);
     }
     for ((user, target), todos) in groups {
-        let user_key = user.map_or_else(|| "terminal".to_owned(), |u| u.to_string());
-        let key = format!("heartbeat:{target}:{user_key}");
+        let key = format!("heartbeat:{target}:{user}");
         let Some(running) = Running::start(key.clone()) else {
             tracing::info!(key, "skipping a heartbeat: the last one has not finished");
             continue;
@@ -222,7 +218,7 @@ async fn run_heartbeat(
     mcp: Arc<Mcp>,
     http: Arc<Http>,
     key: String,
-    user: Option<u64>,
+    user: u64,
     target: String,
     todos: Vec<Todo>,
 ) {
@@ -492,7 +488,7 @@ impl Handler {
         );
         tokio::spawn(async move {
             // Loaded once per call, so the realtime model knows who it is talking to.
-            let memory = match db.memories(Some(author)).await {
+            let memory = match db.memories(author).await {
                 Ok(entries) => entries.into_iter().map(|entry| entry.content).collect(),
                 Err(err) => {
                     tracing::warn!("voice call goes without memory: {err:#}");
@@ -951,9 +947,7 @@ async fn run_channel(
         let result = match download(&io.web, &attachments).await {
             Ok((text, images)) => {
                 let prompt = format!("{prompt}{text}");
-                agent
-                    .run_turn(prompt.trim(), images, Some(author), &mut io)
-                    .await
+                agent.run_turn(prompt.trim(), images, author, &mut io).await
             }
             Err(err) => Err(err),
         };

@@ -266,7 +266,7 @@ mod tests {
     fn todo(id: i64, content: &str) -> Todo {
         Todo {
             id,
-            user: Some(7),
+            user: 7,
             target: "discord:1".to_owned(),
             content: content.to_owned(),
         }

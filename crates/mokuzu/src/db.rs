@@ -110,8 +110,8 @@ pub struct Job {
     pub target: String,
     /// Cron expression; `None` runs once.
     pub schedule: Option<String>,
-    /// Discord user who made it, whose memory its runs load; `None` for the terminal.
-    pub user: Option<u64>,
+    /// Discord user who made it, whose memory its runs load.
+    pub user: u64,
     pub prompt: String,
     /// Unix seconds.
     pub next_run: i64,
@@ -124,9 +124,7 @@ impl Job {
             name: row.get("name")?,
             target: row.get("target")?,
             schedule: row.get("schedule")?,
-            user: row
-                .get::<_, Option<i64>>("user_id")?
-                .map(i64::cast_unsigned),
+            user: row.get::<_, i64>("user_id")?.cast_unsigned(),
             prompt: row.get("prompt")?,
             next_run: row.get("next_run")?,
         })
@@ -137,8 +135,8 @@ impl Job {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Todo {
     pub id: i64,
-    /// Discord user it belongs to; `None` for the terminal.
-    pub user: Option<u64>,
+    /// Discord user it belongs to.
+    pub user: u64,
     /// Conversation key it was written in, where the heartbeat posts about it.
     pub target: String,
     pub content: String,
@@ -148,9 +146,7 @@ impl Todo {
     fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get("id")?,
-            user: row
-                .get::<_, Option<i64>>("user_id")?
-                .map(i64::cast_unsigned),
+            user: row.get::<_, i64>("user_id")?.cast_unsigned(),
             target: row.get("target")?,
             content: row.get("content")?,
         })
@@ -158,8 +154,8 @@ impl Todo {
 }
 
 /// A Discord user ID as SQLite's signed integer; the cast keeps every bit, so it reads back exactly.
-fn sql_user(user: Option<u64>) -> Option<i64> {
-    user.map(u64::cast_signed)
+fn sql_user(user: u64) -> i64 {
+    user.cast_signed()
 }
 
 /// Shared handle; every query runs on Tokio's blocking pool.
@@ -323,12 +319,11 @@ impl Db {
 }
 
 impl Db {
-    /// `user`'s entries: a Discord user ID, or `None` for the terminal.
-    pub async fn memories(&self, user: Option<u64>) -> Result<Vec<Memory>> {
+    /// `user`'s entries.
+    pub async fn memories(&self, user: u64) -> Result<Vec<Memory>> {
         self.with_conn(move |conn| {
-            // `IS` matches NULL too, so the terminal's entries come back for `None`.
             let mut stmt =
-                conn.prepare("SELECT id, content FROM memories WHERE user_id IS ?1 ORDER BY id")?;
+                conn.prepare("SELECT id, content FROM memories WHERE user_id = ?1 ORDER BY id")?;
             let rows = stmt.query_map(params![sql_user(user)], Memory::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -338,7 +333,7 @@ impl Db {
     // ponytail: edits are planned against a read taken just before; two processes editing
     // memory at the same instant could overshoot the budget slightly.
     /// Applies `edit` to `user`'s entries; ids of someone else's entries match nothing.
-    pub async fn save_memory(&self, user: Option<u64>, edit: Edit) -> Result<()> {
+    pub async fn save_memory(&self, user: u64, edit: Edit) -> Result<()> {
         self.with_conn(move |conn| {
             match edit {
                 Edit::Add(content) => conn.execute(
@@ -346,11 +341,11 @@ impl Db {
                     params![content, sql_user(user)],
                 )?,
                 Edit::Replace(id, content) => conn.execute(
-                    "UPDATE memories SET content = ?2 WHERE id = ?1 AND user_id IS ?3",
+                    "UPDATE memories SET content = ?2 WHERE id = ?1 AND user_id = ?3",
                     params![id, content, sql_user(user)],
                 )?,
                 Edit::Remove(id) => conn.execute(
-                    "DELETE FROM memories WHERE id = ?1 AND user_id IS ?2",
+                    "DELETE FROM memories WHERE id = ?1 AND user_id = ?2",
                     params![id, sql_user(user)],
                 )?,
             };
@@ -359,11 +354,11 @@ impl Db {
         .await
     }
 
-    /// `user`'s skills by name: a Discord user ID, or `None` for the terminal.
-    pub async fn skills(&self, user: Option<u64>) -> Result<Vec<Skill>> {
+    /// `user`'s skills by name.
+    pub async fn skills(&self, user: u64) -> Result<Vec<Skill>> {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT name, description, content FROM skills WHERE user_id IS ?1 ORDER BY name",
+                "SELECT name, description, content FROM skills WHERE user_id = ?1 ORDER BY name",
             )?;
             let rows = stmt.query_map(params![sql_user(user)], Skill::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -372,7 +367,7 @@ impl Db {
     }
 
     /// Creates `skill` for `user`, or replaces their one with its name.
-    pub async fn save_skill(&self, user: Option<u64>, skill: Skill) -> Result<()> {
+    pub async fn save_skill(&self, user: u64, skill: Skill) -> Result<()> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO skills (user_id, name, description, content) VALUES (?1, ?2, ?3, ?4)
@@ -387,9 +382,9 @@ impl Db {
     }
 
     /// Deletes `user`'s skill named `name`; false if they had none.
-    pub async fn remove_skill(&self, user: Option<u64>, name: String) -> Result<bool> {
+    pub async fn remove_skill(&self, user: u64, name: String) -> Result<bool> {
         self.with_conn(move |conn| {
-            let sql = "DELETE FROM skills WHERE name = ?1 AND user_id IS ?2";
+            let sql = "DELETE FROM skills WHERE name = ?1 AND user_id = ?2";
             Ok(conn.execute(sql, params![name, sql_user(user)])? > 0)
         })
         .await
@@ -409,7 +404,7 @@ impl Db {
     }
 
     /// Stores a job that posts to the conversation `target` and returns its id.
-    pub async fn add_job(&self, target: String, user: Option<u64>, job: NewJob) -> Result<i64> {
+    pub async fn add_job(&self, target: String, user: u64, job: NewJob) -> Result<i64> {
         self.with_conn(move |conn| {
             conn.execute(
                 "INSERT INTO jobs (name, target, schedule, prompt, next_run, user_id)
@@ -461,11 +456,11 @@ impl Db {
 }
 
 impl Db {
-    /// `user`'s todos, oldest first: a Discord user ID, or `None` for the terminal.
-    pub async fn todos(&self, user: Option<u64>) -> Result<Vec<Todo>> {
+    /// `user`'s todos, oldest first.
+    pub async fn todos(&self, user: u64) -> Result<Vec<Todo>> {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, user_id, target, content FROM todos WHERE user_id IS ?1 ORDER BY id",
+                "SELECT id, user_id, target, content FROM todos WHERE user_id = ?1 ORDER BY id",
             )?;
             let rows = stmt.query_map(params![sql_user(user)], Todo::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -486,7 +481,7 @@ impl Db {
 
     /// Applies `edit` to `user`'s todos; a new one is posted about in `target`. Ids of someone
     /// else's todos match nothing.
-    pub async fn save_todo(&self, user: Option<u64>, target: String, edit: TodoEdit) -> Result<()> {
+    pub async fn save_todo(&self, user: u64, target: String, edit: TodoEdit) -> Result<()> {
         self.with_conn(move |conn| {
             match edit {
                 TodoEdit::Add(content) => conn.execute(
@@ -494,11 +489,11 @@ impl Db {
                     params![sql_user(user), target, content],
                 )?,
                 TodoEdit::Update { id, content } => conn.execute(
-                    "UPDATE todos SET content = ?2 WHERE id = ?1 AND user_id IS ?3",
+                    "UPDATE todos SET content = ?2 WHERE id = ?1 AND user_id = ?3",
                     params![id, content, sql_user(user)],
                 )?,
                 TodoEdit::Done(id) => conn.execute(
-                    "DELETE FROM todos WHERE id = ?1 AND user_id IS ?2",
+                    "DELETE FROM todos WHERE id = ?1 AND user_id = ?2",
                     params![id, sql_user(user)],
                 )?,
             };
@@ -635,30 +630,30 @@ mod tests {
                     .collect::<Vec<_>>()
             }
         };
-        for (user, text) in [(None, "a"), (None, "b"), (Some(7), "mine")] {
+        for (user, text) in [(6, "a"), (6, "b"), (7, "mine")] {
             db.save_memory(user, Edit::Add(text.to_owned()))
                 .await
                 .expect("add");
         }
-        let terminal = contents(None).await;
-        let mine = contents(Some(7)).await;
+        let theirs = contents(6).await;
+        let mine = contents(7).await;
         assert_eq!(mine.len(), 1);
-        assert!(contents(Some(8)).await.is_empty());
+        assert!(contents(8).await.is_empty());
 
-        db.save_memory(None, Edit::Replace(terminal[0].0, "a2".to_owned()))
+        db.save_memory(6, Edit::Replace(theirs[0].0, "a2".to_owned()))
             .await
             .expect("replace");
-        db.save_memory(None, Edit::Remove(terminal[1].0))
+        db.save_memory(6, Edit::Remove(theirs[1].0))
             .await
             .expect("remove");
         // Someone else's entry id changes nothing.
-        db.save_memory(Some(8), Edit::Remove(mine[0].0))
+        db.save_memory(8, Edit::Remove(mine[0].0))
             .await
             .expect("remove");
         let texts =
             |entries: Vec<(i64, String)>| entries.into_iter().map(|e| e.1).collect::<Vec<_>>();
-        assert_eq!(texts(contents(None).await), ["a2"]);
-        assert_eq!(texts(contents(Some(7)).await), ["mine"]);
+        assert_eq!(texts(contents(6).await), ["a2"]);
+        assert_eq!(texts(contents(7).await), ["mine"]);
     }
 
     #[tokio::test]
@@ -669,36 +664,29 @@ mod tests {
             description: "d".to_owned(),
             content: content.to_owned(),
         };
-        db.save_skill(None, skill("b", "one")).await.expect("save");
-        db.save_skill(None, skill("a", "x")).await.expect("save");
-        db.save_skill(None, skill("b", "two"))
+        db.save_skill(6, skill("b", "one")).await.expect("save");
+        db.save_skill(6, skill("a", "x")).await.expect("save");
+        db.save_skill(6, skill("b", "two")).await.expect("replace");
+        db.save_skill(7, skill("b", "mine")).await.expect("save");
+        db.save_skill(7, skill("b", "mine2"))
             .await
             .expect("replace");
-        db.save_skill(Some(7), skill("b", "mine"))
-            .await
-            .expect("save");
-        db.save_skill(Some(7), skill("b", "mine2"))
-            .await
-            .expect("replace");
-        let skills = db.skills(None).await.expect("load");
+        let skills = db.skills(6).await.expect("load");
         assert_eq!(skills, [skill("a", "x"), skill("b", "two")]);
-        assert_eq!(
-            db.skills(Some(7)).await.expect("load"),
-            [skill("b", "mine2")]
-        );
+        assert_eq!(db.skills(7).await.expect("load"), [skill("b", "mine2")]);
         assert!(
-            !db.remove_skill(Some(7), "a".to_owned())
+            !db.remove_skill(7, "a".to_owned())
                 .await
                 .expect("not theirs")
         );
-        assert!(db.remove_skill(None, "a".to_owned()).await.expect("remove"));
+        assert!(db.remove_skill(6, "a".to_owned()).await.expect("remove"));
         assert!(
-            !db.remove_skill(None, "a".to_owned())
+            !db.remove_skill(6, "a".to_owned())
                 .await
                 .expect("remove again")
         );
-        assert_eq!(db.skills(None).await.expect("load").len(), 1);
-        assert_eq!(db.skills(Some(7)).await.expect("load").len(), 1);
+        assert_eq!(db.skills(6).await.expect("load").len(), 1);
+        assert_eq!(db.skills(7).await.expect("load").len(), 1);
     }
 
     #[tokio::test]
@@ -711,21 +699,17 @@ mod tests {
         };
         let db = Db::open_in_memory().expect("open");
         let later = db
-            .add_job(
-                "discord:1".to_owned(),
-                Some(7),
-                job("a", Some("0 9 * * *"), 20),
-            )
+            .add_job("discord:1".to_owned(), 7, job("a", Some("0 9 * * *"), 20))
             .await
             .expect("add");
         let sooner = db
-            .add_job("discord:1".to_owned(), None, job("b", None, 10))
+            .add_job("discord:1".to_owned(), 6, job("b", None, 10))
             .await
             .expect("add");
         let ids = |jobs: Vec<Job>| jobs.into_iter().map(|j| j.id).collect::<Vec<_>>();
         let jobs = db.jobs().await.expect("load");
         assert_eq!(jobs[0].name, "b");
-        assert_eq!((jobs[0].user, jobs[1].user), (None, Some(7)));
+        assert_eq!((jobs[0].user, jobs[1].user), (6, 7));
         assert_eq!(ids(jobs), [sooner, later]);
         db.set_next_run(later, 5).await.expect("update");
         assert_eq!(ids(db.jobs().await.expect("load")), [later, sooner]);
@@ -742,21 +726,21 @@ mod tests {
     async fn todos_are_per_user() {
         let db = Db::open_in_memory().expect("open");
         let add = |content: &str| TodoEdit::Add(content.to_owned());
-        db.save_todo(Some(7), "discord:1".to_owned(), add("report"))
+        db.save_todo(7, "discord:1".to_owned(), add("report"))
             .await
             .expect("add");
-        db.save_todo(None, "terminal".to_owned(), add("mine"))
+        db.save_todo(6, "discord:2".to_owned(), add("mine"))
             .await
             .expect("add");
-        let todos = db.todos(Some(7)).await.expect("load");
+        let todos = db.todos(7).await.expect("load");
         assert_eq!(todos.len(), 1);
         let todo = &todos[0];
         assert_eq!(
             (todo.target.as_str(), todo.content.as_str()),
             ("discord:1", "report")
         );
-        let other = db.todos(None).await.expect("load")[0].id;
-        db.save_todo(Some(7), String::new(), TodoEdit::Done(other))
+        let other = db.todos(6).await.expect("load")[0].id;
+        db.save_todo(7, String::new(), TodoEdit::Done(other))
             .await
             .expect("someone else's");
         assert_eq!(db.all_todos().await.expect("load").len(), 2);
@@ -764,15 +748,15 @@ mod tests {
             id: todo.id,
             content: "report, draft sent".to_owned(),
         };
-        db.save_todo(Some(7), String::new(), update)
+        db.save_todo(7, String::new(), update)
             .await
             .expect("update");
-        let todos = db.todos(Some(7)).await.expect("load");
+        let todos = db.todos(7).await.expect("load");
         assert_eq!(todos[0].content, "report, draft sent");
-        db.save_todo(Some(7), String::new(), TodoEdit::Done(todo.id))
+        db.save_todo(7, String::new(), TodoEdit::Done(todo.id))
             .await
             .expect("done");
-        assert!(db.todos(Some(7)).await.expect("load").is_empty());
+        assert!(db.todos(7).await.expect("load").is_empty());
     }
 
     #[test]

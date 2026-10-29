@@ -1,5 +1,5 @@
-//! Long-term memory: short facts the agent saves itself, one set per person (each Discord user, and
-//! the terminal), shared by all of that person's conversations and loaded before every turn.
+//! Long-term memory: short facts the agent saves itself, one set per Discord user, shared by all of
+//! that person's conversations and loaded before every turn.
 
 use serde_json::{Value, json};
 
