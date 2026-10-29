@@ -21,6 +21,14 @@ pub const MIN_COMPACT_AT_TOKENS: usize = 10_000;
 pub const DEFAULT_SCREEN: (u32, u32) = (1280, 800);
 pub const MIN_SCREEN: (u32, u32) = (640, 480);
 pub const DEFAULT_VIEWER_PORT: u16 = 22050;
+pub const DEFAULT_REALTIME_URL: &str = "wss://api.openai.com/v1/realtime";
+pub const DEFAULT_REALTIME_MODEL: &str = "gpt-realtime-2.1-mini";
+/// What a voice call speaks until set otherwise.
+pub const DEFAULT_VOICE_LANGUAGE: &str = "English";
+/// Voices the Realtime API offers; `marin` and `cedar` sound the most natural.
+pub const REALTIME_VOICES: [&str; 10] = [
+    "marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
+];
 
 /// Which OpenCode Go endpoint format a model speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -155,6 +163,7 @@ struct File {
     approval: ApprovalSection,
     log: LogSection,
     discord: Option<DiscordSection>,
+    voice: Option<VoiceSection>,
     database: DatabaseSection,
     browser: BrowserSection,
 }
@@ -376,6 +385,41 @@ struct LogSection {
     level: String,
 }
 
+/// `[voice]`: voice calls in Discord (`/voice`) through OpenAI's Realtime API.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VoiceSection {
+    /// OpenAI API key.
+    pub api_key: Secret,
+    /// Realtime WebSocket endpoint; `?model=` is appended.
+    pub url: String,
+    pub model: String,
+    /// One of `REALTIME_VOICES`, or any other the API offers.
+    pub voice: String,
+    /// The language calls are held in, as words the model reads ("Traditional Chinese", "日本語").
+    pub language: String,
+    /// Voice channels mokuzu joins on its own when someone allowed to talk to it joins them.
+    pub channels: Vec<u64>,
+}
+
+impl VoiceSection {
+    fn validate(&self) -> Result<()> {
+        if self.api_key.as_str().trim().is_empty() {
+            bail!("voice.api_key is empty");
+        }
+        if !self.url.starts_with("wss://") {
+            bail!("voice.url must start with wss://");
+        }
+        if [&self.model, &self.voice, &self.language]
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            bail!("voice.model, voice.voice and voice.language must not be empty");
+        }
+        Ok(())
+    }
+}
+
 /// `[discord]`: lets `mokuzu serve` chat through a Discord bot, by DM and in any server channel.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -483,6 +527,8 @@ pub struct Config {
     /// `tracing` filter directive, e.g. `warn` or `mokuzu=debug`.
     pub log_level: String,
     pub discord: Option<DiscordSection>,
+    /// Enables `/voice` calls in Discord.
+    pub voice: Option<VoiceSection>,
     /// SQLite file holding conversation history.
     pub database_path: PathBuf,
     /// The user's time zone, for message timestamps and scheduled jobs.
@@ -564,6 +610,9 @@ impl Config {
         if compact_at_tokens < MIN_COMPACT_AT_TOKENS {
             bail!("model.compact_at_tokens must be at least {MIN_COMPACT_AT_TOKENS}");
         }
+        if let Some(voice) = &file.voice {
+            voice.validate()?;
+        }
         for (name, server) in &file.mcp.servers {
             server.validate(name)?;
         }
@@ -616,6 +665,7 @@ impl Config {
             mcp: file.mcp.servers,
             log_level: file.log.level,
             discord: file.discord,
+            voice: file.voice,
             database_path: file.database.path,
             timezone,
             browser_screen,
@@ -848,6 +898,27 @@ mod tests {
             ))
             .is_err(),
             "only one search provider"
+        );
+    }
+
+    #[test]
+    fn voice_section_needs_a_websocket_url_and_a_key() {
+        let base = "[opencode-go]\napi_key = \"k\"\n[voice]\nmodel = \"m\"\nvoice = \"marin\"\n\
+                    language = \"English\"\nchannels = [7]\n";
+        let config = Config::parse(&format!(
+            "{base}api_key = \"sk\"\nurl = \"wss://x/v1/realtime\"\n"
+        ))
+        .expect("valid");
+        let voice = config.voice.expect("voice");
+        assert_eq!(
+            (voice.model.as_str(), voice.channels.as_slice()),
+            ("m", &[7][..])
+        );
+        assert!(Config::parse(&format!("{base}api_key = \"sk\"\nurl = \"https://x\"\n")).is_err());
+        assert!(Config::parse(&format!("{base}api_key = \" \"\nurl = \"wss://x\"\n")).is_err());
+        assert!(
+            Config::parse(&format!("{base}api_key = \"sk\"\n")).is_err(),
+            "url is required"
         );
     }
 

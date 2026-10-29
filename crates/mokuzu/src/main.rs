@@ -20,6 +20,7 @@ mod settings;
 mod skill;
 mod swarm;
 mod todo;
+mod voice;
 
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -41,6 +42,7 @@ const USAGE: &str =
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_tls_provider();
     let mut command = None;
     let mut config_path = None;
     let mut args = std::env::args_os().skip(1);
@@ -136,4 +138,12 @@ async fn chat(config: config::Config) -> Result<()> {
     let mcp = std::sync::Arc::new(mcp::Mcp::connect(&config.mcp, display.as_deref()).await);
     let agent = agent::Agent::new(config, db, mcp, "terminal").await?;
     chat::run(agent).await
+}
+
+/// Picks rustls's crypto backend for the whole process. reqwest brings aws-lc-rs and songbird's
+/// own reqwest brings ring; with both compiled in, rustls cannot choose and panics on the first
+/// TLS connection that relies on the default.
+fn install_tls_provider() {
+    // Fails only when a provider is already installed, which is just as good.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }

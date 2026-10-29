@@ -110,3 +110,20 @@ viewer_port = 22050
 # # allowed_users = "*"
 # # Answer only messages that @mention the bot, in its threads too.
 # mention_only = true
+
+# Optional, with [discord]. Voice calls: send /voice in a server while you are in one of its voice
+# channels, and mokuzu joins it and talks with you through OpenAI's Realtime API. The realtime
+# model holds the conversation and hands anything past small talk to mokuzu's agent, which answers
+# in the channel you sent /voice from. /hangup ends the call.
+# [voice]
+# api_key = "sk-..."
+# url = "wss://api.openai.com/v1/realtime"
+# # gpt-realtime-2.1 sounds smarter at about three times the price.
+# model = "gpt-realtime-2.1-mini"
+# # marin, cedar, alloy, ash, ballad, coral, echo, sage, shimmer, or verse.
+# voice = "marin"
+# # The language calls are held in, as you would name it to a person.
+# language = "Traditional Chinese"
+# # Voice channel IDs mokuzu joins on its own when someone allowed to talk to it joins; the
+# # agent answers in the channel's text chat. [] for /voice only.
+# channels = []

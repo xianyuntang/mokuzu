@@ -24,10 +24,15 @@ rig-core = "0.42.0"
 rmcp = { version = "3.4.1", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rusqlite_migration = { version = "2.6.0", features = ["from-directory"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-serenity = { version = "0.12.5", default-features = false, features = ["client", "gateway", "model", "rustls_backend"] }
+serenity = { version = "0.12.5", default-features = false, features = ["client", "gateway", "model", "rustls_backend", "voice"] }
+songbird = { version = "0.6.1", default-features = false, features = ["serenity", "driver", "gateway", "receive", "rustls", "tungstenite"] }
+# Only to turn on PCM decoding, which songbird needs to play raw audio.
+symphonia = { version = "0.5.5", default-features = false, features = ["pcm"] }
 tokio = { version = "1.53.1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 toml = "1.1.6"
 toml_edit = "0.25.15"
 tracing = "0.1.44"

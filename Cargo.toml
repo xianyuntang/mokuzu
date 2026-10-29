@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+exclude = ["vendor"]
+
+# songbird 0.6.1 hands DAVE-encrypted voice to the Opus decoder with the DAVE trailer still on,
+# so every frame fails to decode (serenity-rs/songbird#315). Drop once a release fixes it.
+[patch.crates-io]
+songbird = { path = "vendor/songbird" }
 
 [profile.dev]
 opt-level = 0

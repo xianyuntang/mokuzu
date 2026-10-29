@@ -1,7 +1,8 @@
 //! Discord gateway: one agent per DM or thread. A message in a server text channel opens a new
 //! thread for its conversation. Memory is shared by every conversation. Only allow-listed
 //! users are heard, per server if `[discord.guilds]` says so, and they approve settings changes
-//! with buttons.
+//! with buttons. With `[voice]` set, `/voice` or joining one of its `channels` starts a voice call
+//! (see `voice`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,19 +15,21 @@ use serenity::all::{
     CommandInteraction, CommandOptionType, ComponentInteraction, Context, CreateActionRow,
     CreateAllowedMentions, CreateAttachment, CreateButton, CreateCommand, CreateCommandOption,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, CreateThread,
-    EditMessage, EditThread, EventHandler, GatewayIntents, Http, Interaction, Message, MessageId,
-    Ready, UserId,
+    EditMessage, EditThread, EventHandler, GatewayIntents, GuildId, Http, Interaction, Message,
+    MessageId, Ready, UserId, VoiceState,
 };
 use serenity::async_trait;
-use tokio::sync::mpsc;
+use songbird::serenity::SerenityInit as _;
+use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::agent::{self, Agent, Io};
-use crate::config::{Config, DiscordSection};
+use crate::config::{Config, DiscordSection, VoiceSection};
 use crate::cron;
 use crate::db::{Db, Job, Todo};
 use crate::document;
 use crate::mcp::Mcp;
 use crate::todo::{self, Quiet};
+use crate::voice;
 
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How long a turn waits for another message before starting, so a burst is answered once.
@@ -69,6 +72,8 @@ enum Input {
         author: u64,
         /// Whether a typed `y` from them approves a waiting action.
         can_approve: bool,
+        /// Set for a voice call's request: gets what the turn said, so the call can read it out.
+        reply: Option<oneshot::Sender<String>>,
     },
     /// A Run or Deny click on the approval message `message`.
     Decision { message: MessageId, run: bool },
@@ -83,24 +88,37 @@ pub async fn serve(config: Config) -> Result<()> {
     };
     let db = Db::open(&config.database_path)?;
     // MESSAGE_CONTENT is privileged: enable it for the bot in the Developer Portal, or connecting fails.
-    let intents = GatewayIntents::DIRECT_MESSAGES
+    let mut intents = GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::MESSAGE_CONTENT;
+    if config.voice.is_some() {
+        intents |= GatewayIntents::GUILD_VOICE_STATES;
+    }
     let display = crate::browser::desktop(config.browser_screen).await;
     let mcp = Arc::new(Mcp::connect(&config.mcp, display.as_deref()).await);
     let token = discord.token.as_str().to_owned();
+    let voice = config
+        .voice
+        .clone()
+        .map(|section| (voice::songbird(), section));
     let handler = Handler {
-        mcp: Arc::clone(&mcp),
-        config: config.clone(),
         db: db.clone(),
         discord,
         bot: OnceLock::new(),
-        channels: Mutex::new(HashMap::new()),
+        inboxes: Arc::new(Inboxes {
+            mcp: Arc::clone(&mcp),
+            config: config.clone(),
+            db: db.clone(),
+            channels: Mutex::new(HashMap::new()),
+        }),
+        voice: voice.clone(),
+        calls: Arc::new(Mutex::new(HashMap::new())),
     };
-    let mut client = Client::builder(&token, intents)
-        .event_handler(handler)
-        .await
-        .context("failed to build Discord client")?;
+    let mut builder = Client::builder(&token, intents).event_handler(handler);
+    if let Some((songbird, _)) = voice {
+        builder = builder.register_songbird_with(songbird);
+    }
+    let mut client = builder.await.context("failed to build Discord client")?;
     tokio::spawn(run_scheduler(config, db, mcp, Arc::clone(&client.http)));
     client.start().await.context("Discord connection failed")
 }
@@ -261,6 +279,7 @@ fn unattended_io(http: Arc<Http>, target: &str) -> Option<DiscordIo> {
         status: None,
         board: None,
         overheard: Vec::new(),
+        reply: None,
     })
 }
 
@@ -336,19 +355,29 @@ async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Jo
 }
 
 struct Handler {
-    /// MCP servers, shared by every channel's agent.
-    mcp: Arc<Mcp>,
-    config: Config,
     db: Db,
     /// Who the bot acts on, in DMs and in each server.
     discord: DiscordSection,
     /// The bot's own user, known once connected.
     bot: OnceLock<UserId>,
+    inboxes: Arc<Inboxes>,
+    /// The voice manager and `[voice]`, when calls are on.
+    voice: Option<(Arc<songbird::Songbird>, VoiceSection)>,
+    /// Each server's call in progress, ended by notifying it.
+    calls: Arc<Mutex<HashMap<GuildId, Arc<Notify>>>>,
+}
+
+/// The agent task of each channel's conversation, shared so a voice call can hand it requests.
+struct Inboxes {
+    /// MCP servers, shared by every channel's agent.
+    mcp: Arc<Mcp>,
+    config: Config,
+    db: Db,
     /// Inbox of the task that owns each channel's conversation.
     channels: Mutex<HashMap<ChannelId, mpsc::UnboundedSender<Input>>>,
 }
 
-impl Handler {
+impl Inboxes {
     /// Hands `input` to the channel's agent task, starting one for text if none is running.
     fn deliver(&self, http: &Arc<Http>, channel: ChannelId, input: Input) {
         let Ok(mut channels) = self.channels.lock() else {
@@ -374,6 +403,162 @@ impl Handler {
             // The channel task died; drop it so the next message starts a fresh one.
             channels.remove(&channel);
         }
+    }
+}
+
+impl Handler {
+    fn deliver(&self, http: &Arc<Http>, channel: ChannelId, input: Input) {
+        self.inboxes.deliver(http, channel, input);
+    }
+
+    /// `/voice` joins the sender's voice channel for a call; `/hangup` ends the call. Requests
+    /// the call hands to mokuzu run in `msg`'s channel.
+    async fn voice_command(&self, ctx: &Context, msg: &Message, author: u64, content: &str) {
+        let reply = match self.start_or_end_call(ctx, msg, author, content).await {
+            Ok(reply) => reply,
+            Err(err) => format!("error: {err:#}"),
+        };
+        if let Err(err) = msg.channel_id.say(&ctx.http, reply).await {
+            tracing::warn!("failed to answer a voice command: {err:#}");
+        }
+    }
+
+    async fn start_or_end_call(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        author: u64,
+        content: &str,
+    ) -> Result<String> {
+        if self.voice.is_none() {
+            return Ok("Voice calls need a [voice] section in the config.".to_owned());
+        }
+        let Some(guild) = msg.guild_id else {
+            return Ok("Voice calls work in a server, not in DMs.".to_owned());
+        };
+        if content == voice::HANGUP_COMMAND {
+            let stop = lock(&self.calls).remove(&guild);
+            return Ok(match stop {
+                Some(stop) => {
+                    stop.notify_one();
+                    "📴 Hanging up.".to_owned()
+                }
+                None => "No call in this server.".to_owned(),
+            });
+        }
+        let state = guild
+            .get_user_voice_state(&ctx.http, UserId::new(author))
+            .await;
+        let Some(channel) = state.ok().and_then(|state| state.channel_id) else {
+            return Ok(format!(
+                "Join a voice channel first, then send {}.",
+                voice::VOICE_COMMAND
+            ));
+        };
+        self.start_call(&ctx.http, guild, channel, author, msg.channel_id)
+    }
+
+    /// Joins `channel` for a call with `author`, unless the server has one going. The agent
+    /// answers in `text_channel`.
+    fn start_call(
+        &self,
+        http: &Arc<Http>,
+        guild: GuildId,
+        channel: ChannelId,
+        author: u64,
+        text_channel: ChannelId,
+    ) -> Result<String> {
+        let Some((songbird, section)) = &self.voice else {
+            return Ok("Voice calls need a [voice] section in the config.".to_owned());
+        };
+        let stop = Arc::new(Notify::new());
+        {
+            let mut calls = lock(&self.calls);
+            if calls.contains_key(&guild) {
+                return Ok(format!(
+                    "Already in a call here; send {} to end it.",
+                    voice::HANGUP_COMMAND
+                ));
+            }
+            calls.insert(guild, Arc::clone(&stop));
+        }
+        let ask = self.ask(http, text_channel, author, guild);
+        let (songbird, section, http, calls, db) = (
+            Arc::clone(songbird),
+            section.clone(),
+            Arc::clone(http),
+            Arc::clone(&self.calls),
+            self.db.clone(),
+        );
+        tokio::spawn(async move {
+            // Loaded once per call, so the realtime model knows who it is talking to.
+            let memory = match db.memories(Some(author)).await {
+                Ok(entries) => entries.into_iter().map(|entry| entry.content).collect(),
+                Err(err) => {
+                    tracing::warn!("voice call goes without memory: {err:#}");
+                    Vec::new()
+                }
+            };
+            let caller = voice::Caller { id: author, memory };
+            let ended = voice::call(
+                songbird,
+                section,
+                guild,
+                channel,
+                caller,
+                ask,
+                Arc::clone(&stop),
+            )
+            .await;
+            {
+                let mut calls = lock(&calls);
+                if calls.get(&guild).is_some_and(|s| Arc::ptr_eq(s, &stop)) {
+                    calls.remove(&guild);
+                }
+            }
+            let note = match ended {
+                Ok(()) => "📴 Call ended.".to_owned(),
+                Err(err) => {
+                    tracing::warn!("voice call failed: {err:#}");
+                    format!("📴 Call ended: {err:#}")
+                }
+            };
+            if let Err(err) = text_channel.say(&http, note).await {
+                tracing::warn!("failed to report the end of a call: {err:#}");
+            }
+        });
+        Ok(format!(
+            "📞 Joining <#{channel}>. Talk to me there; {} ends the call.",
+            voice::HANGUP_COMMAND
+        ))
+    }
+
+    /// `ask_mokuzu` for a call: posts the request in `channel` and runs it as `author`'s turn
+    /// there, returning what the turn said.
+    fn ask(&self, http: &Arc<Http>, channel: ChannelId, author: u64, guild: GuildId) -> voice::Ask {
+        let (inboxes, http) = (Arc::clone(&self.inboxes), Arc::clone(http));
+        let can_approve = self.discord.can_approve(Some(guild.get()), author);
+        Arc::new(move |request: String| {
+            let (inboxes, http) = (Arc::clone(&inboxes), Arc::clone(&http));
+            Box::pin(async move {
+                let posted = CreateMessage::new()
+                    .content(format!("🎙️ {request}"))
+                    .allowed_mentions(CreateAllowedMentions::new());
+                let message = channel.send_message(&http, posted).await?.id;
+                let (reply, said) = oneshot::channel();
+                let input = Input::Text {
+                    content: request,
+                    attachments: Vec::new(),
+                    origin: channel,
+                    message,
+                    author,
+                    can_approve,
+                    reply: Some(reply),
+                };
+                inboxes.deliver(&http, channel, input);
+                said.await.context("mokuzu dropped the request")
+            })
+        })
     }
 
     /// Hands a skipped server message to its channel's history, if the bot has a conversation
@@ -412,11 +597,15 @@ impl Handler {
         attachments: Vec<Attachment>,
         author: u64,
     ) {
+        if [voice::VOICE_COMMAND, voice::HANGUP_COMMAND].contains(&content.trim()) {
+            self.voice_command(ctx, msg, author, content.trim()).await;
+            return;
+        }
         // Acknowledge right away so the user knows the bot has it before the model answers.
         if let Err(err) = msg.react(&ctx.http, RECEIVED).await {
             tracing::warn!("failed to react to message: {err:#}");
         }
-        let channel = match route(ctx, msg, &content, &self.config).await {
+        let channel = match route(ctx, msg, &content, &self.inboxes.config).await {
             Ok(channel) => channel,
             Err(err) => {
                 tracing::warn!("failed to open a thread, answering in place: {err:#}");
@@ -432,6 +621,7 @@ impl Handler {
             can_approve: self
                 .discord
                 .can_approve(msg.guild_id.map(|g| g.get()), author),
+            reply: None,
         };
         self.deliver(&ctx.http, channel, input);
     }
@@ -540,7 +730,7 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         let _ = self.bot.set(ready.user.id);
         // Listed so Discord suggests them when the user types `/`; typing them as text still works.
-        let commands = vec![
+        let mut commands = vec![
             CreateCommand::new("cast")
                 .description("Send out a cast of crabs: many agents researching at once")
                 .add_option(
@@ -554,11 +744,41 @@ impl EventHandler for Handler {
             CreateCommand::new("browser")
                 .description("Get a link to a live view of mokuzu's browser"),
         ];
+        if self.voice.is_some() {
+            commands.push(
+                CreateCommand::new("voice")
+                    .description("Talk with mokuzu in the voice channel you are in"),
+            );
+            commands.push(CreateCommand::new("hangup").description("End the voice call"));
+        }
         if let Err(err) = Command::set_global_commands(&ctx.http, commands).await {
             tracing::warn!("failed to register slash commands: {err:#}");
         }
         // Printed, not logged, so `mokuzu serve` shows it at the default log level.
         eprintln!("connected to Discord as {}", ready.user.name);
+    }
+
+    /// Someone allowed to talk to the bot joining one of `[voice] channels` starts a call there,
+    /// answered in the channel's own text chat.
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+        let (Some((_, section)), Some(guild), Some(channel)) =
+            (&self.voice, new.guild_id, new.channel_id)
+        else {
+            return;
+        };
+        let author = new.user_id.get();
+        let moved_in = old.and_then(|old| old.channel_id) != Some(channel);
+        if !moved_in
+            || !section.channels.contains(&channel.get())
+            || self.bot.get() == Some(&new.user_id)
+            || !self.discord.can_talk(Some(guild.get()), author)
+            || lock(&self.calls).contains_key(&guild)
+        {
+            return;
+        }
+        if let Err(err) = self.start_call(&ctx.http, guild, channel, author, channel) {
+            tracing::warn!("failed to start a voice call: {err:#}");
+        }
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
@@ -622,6 +842,10 @@ async fn rename(http: &Http, thread: ChannelId, config: &Config, content: &str) 
     }
 }
 
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// `content` without @mentions of `bot`, which only say who the message is for.
 fn strip_mention(content: &str, bot: UserId) -> String {
     content
@@ -674,6 +898,7 @@ async fn run_channel(
         status: None,
         board: None,
         overheard: Vec::new(),
+        reply: None,
     };
     // Input that ended a merged burst, handled next on its own.
     let mut next = None;
@@ -685,15 +910,16 @@ async fn run_channel(
                 None => break,
             },
         };
-        let (mut content, mut attachments, origin, message, author) = match input {
+        let (mut content, mut attachments, origin, message, author, reply) = match input {
             Input::Text {
                 content,
                 attachments,
                 origin,
                 message,
                 author,
+                reply,
                 ..
-            } => (content, attachments, origin, message, author),
+            } => (content, attachments, origin, message, author, reply),
             Input::Overheard { who, text } => {
                 if let Err(err) = agent.overhear(&who, &text).await {
                     tracing::warn!("{err:#}");
@@ -703,14 +929,18 @@ async fn run_channel(
             Input::Decision { .. } => continue, // A click on an approval that already timed out.
         };
         let mut messages = vec![(origin, message)];
-        next = merge_waiting(
-            &mut io.inbox,
-            author,
-            &mut content,
-            &mut attachments,
-            &mut messages,
-        )
-        .await;
+        // A call's request is answered on its own, so its reply holds only its answer.
+        if reply.is_none() {
+            next = merge_waiting(
+                &mut io.inbox,
+                author,
+                &mut content,
+                &mut attachments,
+                &mut messages,
+            )
+            .await;
+        }
+        io.reply = reply.map(|reply| (reply, String::new()));
         let prompt = content.trim();
         if prompt.is_empty() && attachments.is_empty() {
             io.finish_all(&messages, true).await;
@@ -740,6 +970,14 @@ async fn run_channel(
                 tracing::error!("failed to report error: {err:#}");
             }
         }
+        if let Some((reply, said)) = io.reply.take() {
+            let said = if said.trim().is_empty() {
+                "(mokuzu did the request and had nothing to add)".to_owned()
+            } else {
+                said
+            };
+            let _ = reply.send(said);
+        }
         io.finish_all(&messages, result.is_ok()).await;
     }
 }
@@ -768,6 +1006,7 @@ async fn merge_waiting(
             message,
             author: sender,
             can_approve,
+            reply,
         } = input
         else {
             if matches!(input, Input::Overheard { .. }) {
@@ -775,8 +1014,8 @@ async fn merge_waiting(
             }
             continue;
         };
-        // Each turn has one sender, so it loads one person's memory.
-        if sender != author {
+        // Each turn has one sender, so it loads one person's memory; a call's request goes alone.
+        if sender != author || reply.is_some() {
             return Some(Input::Text {
                 content: more,
                 attachments: more_attachments,
@@ -784,6 +1023,7 @@ async fn merge_waiting(
                 message,
                 author: sender,
                 can_approve,
+                reply,
             });
         }
         content.push('\n');
@@ -807,6 +1047,8 @@ struct DiscordIo {
     board: Option<MessageId>,
     /// Chat overheard while a turn waits for approval, as `(who, text)`, added once it ends.
     overheard: Vec<(String, String)>,
+    /// A voice call's request this turn answers, and everything the turn has said so far.
+    reply: Option<(oneshot::Sender<String>, String)>,
 }
 
 impl DiscordIo {
@@ -852,6 +1094,10 @@ impl DiscordIo {
 
 impl Io for DiscordIo {
     async fn say(&mut self, text: &str) -> Result<()> {
+        if let Some((_, said)) = &mut self.reply {
+            said.push_str(text);
+            said.push('\n');
+        }
         // Notes after this reply start a new status message below it.
         self.status = None;
         for chunk in chunks(text, MAX_MESSAGE_CHARS) {
@@ -1144,6 +1390,7 @@ mod tests {
             message: MessageId::new(id),
             author: 7,
             can_approve: true,
+            reply: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
         for input in [
@@ -1177,6 +1424,7 @@ mod tests {
                 message: MessageId::new(id),
                 author,
                 can_approve: true,
+                reply: None,
             };
             tx.send(input).unwrap();
         }
@@ -1200,6 +1448,7 @@ mod tests {
                     message: MessageId::new(id),
                     author: 7,
                     can_approve: true,
+                    reply: None,
                 };
                 if tx.send(input).is_err() {
                     break;

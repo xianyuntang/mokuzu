@@ -137,9 +137,16 @@ const COMPACT_AT: usize = 33;
 const BROWSER_WIDTH: usize = 34;
 const BROWSER_HEIGHT: usize = 35;
 const VIEWER_PORT: usize = 36;
+const VOICE: usize = 37;
+const VOICE_KEY: usize = 38;
+const VOICE_MODEL: usize = 39;
+const VOICE_NAME: usize = 40;
+const VOICE_URL: usize = 41;
+const VOICE_CHANNELS: usize = 42;
+const VOICE_LANGUAGE: usize = 43;
 /// First of the rows for already configured MCP servers, followed by the configured Discord
 /// servers' rows.
-const MCP_FIRST: usize = 37;
+const MCP_FIRST: usize = 44;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -432,6 +439,58 @@ impl Form {
                 .map_or(config::DEFAULT_VIEWER_PORT, |c| c.viewer_port)
                 .to_string(),
         ));
+        let voice = current.and_then(|c| c.voice.as_ref());
+        fields.push(field(
+            1,
+            "Voice calls",
+            Kind::Select(options(&[DISABLED, ENABLED])),
+            if voice.is_some() { ENABLED } else { DISABLED }.to_owned(),
+        ));
+        fields.push(field(
+            1,
+            "OpenAI API key",
+            Kind::Secret,
+            voice
+                .map(|v| v.api_key.as_str().to_owned())
+                .unwrap_or_default(),
+        ));
+        fields.push(field(
+            1,
+            "Realtime model",
+            Kind::Text,
+            voice
+                .map_or(config::DEFAULT_REALTIME_MODEL, |v| v.model.as_str())
+                .to_owned(),
+        ));
+        let voice_name = voice.map_or(config::REALTIME_VOICES[0], |v| v.voice.as_str());
+        fields.push(field(
+            1,
+            "Voice",
+            Kind::Select(options_with(&config::REALTIME_VOICES, voice_name)),
+            voice_name.to_owned(),
+        ));
+        fields.push(field(
+            1,
+            "Realtime URL",
+            Kind::Text,
+            voice
+                .map_or(config::DEFAULT_REALTIME_URL, |v| v.url.as_str())
+                .to_owned(),
+        ));
+        fields.push(field(
+            1,
+            "Auto-join channels",
+            Kind::Text,
+            voice.map(|v| join_ids(&v.channels)).unwrap_or_default(),
+        ));
+        fields.push(field(
+            1,
+            "Language",
+            Kind::Text,
+            voice
+                .map_or(config::DEFAULT_VOICE_LANGUAGE, |v| v.language.as_str())
+                .to_owned(),
+        ));
         let mcp_names: Vec<String> = current
             .map(|c| c.mcp.keys().cloned().collect())
             .unwrap_or_default();
@@ -502,7 +561,11 @@ impl Form {
         field.step == self.step
             && match i {
                 CUSTOM_MODEL => self.fields[MODEL].value == CUSTOM,
-                TOKEN | USERS | GUILD_ADD => self.fields[DISCORD].value == ENABLED,
+                TOKEN | USERS | GUILD_ADD | VOICE => self.fields[DISCORD].value == ENABLED,
+                VOICE_KEY | VOICE_MODEL | VOICE_NAME | VOICE_URL | VOICE_CHANNELS
+                | VOICE_LANGUAGE => {
+                    self.fields[DISCORD].value == ENABLED && self.fields[VOICE].value == ENABLED
+                }
                 GUILD_ID | GUILD_USERS | GUILD_REPLY => {
                     self.fields[DISCORD].value == ENABLED && self.fields[GUILD_ADD].value == YES
                 }
@@ -716,6 +779,7 @@ impl Form {
             }
             1 => {
                 self.discord()?;
+                self.voice()?;
             }
             2 => {
                 self.search()?;
@@ -817,6 +881,25 @@ impl Form {
         zone.parse::<chrono_tz::Tz>()
             .map_err(|_| format!("Time zone `{zone}` is not an IANA name like Asia/Taipei"))?;
         Ok(zone)
+    }
+
+    /// The `[voice]` section; calls run through the Discord bot, so only with it on.
+    fn voice(&self) -> std::result::Result<Option<VoiceAnswers>, String> {
+        if self.fields[DISCORD].value != ENABLED || self.fields[VOICE].value != ENABLED {
+            return Ok(None);
+        }
+        let url = self.required(VOICE_URL)?;
+        if !url.starts_with("wss://") {
+            return Err("Realtime URL must start with wss://".to_owned());
+        }
+        Ok(Some(VoiceAnswers {
+            api_key: self.required(VOICE_KEY)?,
+            url,
+            model: self.required(VOICE_MODEL)?,
+            voice: self.required(VOICE_NAME)?,
+            language: self.required(VOICE_LANGUAGE)?,
+            channels: parse_ids(&self.value(VOICE_CHANNELS), "channel")?,
+        }))
     }
 
     fn discord(&self) -> std::result::Result<Option<DiscordAnswers>, String> {
@@ -955,6 +1038,7 @@ impl Form {
             api_key: self.required(KEY)?,
             model: self.model()?,
             discord: self.discord()?,
+            voice: self.voice()?,
             search: self.search()?,
             log_level: self.required(LOG)?,
             auto_approval: if self.fields[APPROVAL].value == AUTO {
@@ -1192,6 +1276,10 @@ impl Form {
                     | MCP_COMMAND
                     | MCP_URL
                     | DATABASE
+                    | VOICE_KEY
+                    | VOICE_MODEL
+                    | VOICE_URL
+                    | VOICE_LANGUAGE
             );
             return (self.attempted && required)
                 .then(|| format!("{} is required", self.fields[i].label));
@@ -1200,6 +1288,7 @@ impl Form {
             USERS => parse_user_ids(&value).err(),
             GUILD_ID => parse_server_id(&value).err(),
             GUILD_USERS if value != "*" => parse_user_ids(&value).err(),
+            VOICE_CHANNELS => parse_ids(&value, "channel").err(),
             TIMEZONE => self.timezone().err(),
             SEARCH_RESULTS => self.search_results().err(),
             MAX_TOKENS => self.number::<u32>(i, 1).err(),
@@ -1207,6 +1296,9 @@ impl Form {
             BROWSER_WIDTH => self.number(i, config::MIN_SCREEN.0).err(),
             BROWSER_HEIGHT => self.number(i, config::MIN_SCREEN.1).err(),
             VIEWER_PORT => self.number::<u16>(i, 1).err(),
+            VOICE_URL => {
+                (!value.starts_with("wss://")).then(|| "must start with wss://".to_owned())
+            }
             SEARCH_URL | MCP_URL => (!value.starts_with("http://")
                 && !value.starts_with("https://"))
             .then(|| "must start with http:// or https://".to_owned()),
@@ -1254,6 +1346,19 @@ fn help(i: usize) -> (&'static str, &'static str) {
              below; set one to Remove to drop or replace it."
         }
         GUILD_ID => "With Developer Mode on, right-click the server › Copy Server ID.",
+        VOICE => {
+            "Lets /voice in a server start a voice call: mokuzu joins your voice channel and \
+             talks through OpenAI's Realtime API, handing anything past small talk to the agent."
+        }
+        VOICE_KEY => "An OpenAI API key, from platform.openai.com. ^R shows it.",
+        VOICE_MODEL => "The Realtime API model that talks.",
+        VOICE_NAME => "The voice it speaks with; marin and cedar sound the most natural.",
+        VOICE_URL => "The Realtime API's WebSocket endpoint. Change it only for a proxy.",
+        VOICE_LANGUAGE => "The language calls are held in, e.g. Traditional Chinese.",
+        VOICE_CHANNELS => {
+            "Comma-separated voice channel IDs mokuzu joins as soon as you do, without /voice; \
+             blank for none. Right-click the channel › Copy Channel ID."
+        }
         GUILD_USERS => "Comma-separated user IDs, or * for everyone in the server.",
         GUILD_REPLY => "Every message, or only messages that @mention the bot, in threads too.",
         SEARCH => "Gives the model a web_search tool through SearXNG or the Brave Search API.",
@@ -1336,6 +1441,16 @@ struct DiscordAnswers {
     guilds: Vec<GuildAnswers>,
 }
 
+/// The `[voice]` section.
+struct VoiceAnswers {
+    api_key: String,
+    url: String,
+    model: String,
+    voice: String,
+    language: String,
+    channels: Vec<u64>,
+}
+
 /// One `[discord.guilds.<id>]` table.
 struct GuildAnswers {
     id: u64,
@@ -1400,6 +1515,7 @@ struct Answers {
     model: String,
     api_key: String,
     discord: Option<DiscordAnswers>,
+    voice: Option<VoiceAnswers>,
     search: Option<SearchAnswers>,
     log_level: String,
     /// `Some` for auto approval, holding the reviewer model.
@@ -1563,6 +1679,18 @@ fn render_toml(answers: &Answers) -> String {
             text.push_str(&format!("mention_only = {}\n", guild.mention_only));
         }
     }
+    if let Some(voice) = &answers.voice {
+        text.push_str(&format!(
+            "\n[voice]\napi_key = {}\nurl = {}\nmodel = {}\nvoice = {}\nlanguage = {}\n\
+             channels = [{}]\n",
+            quote(&voice.api_key),
+            quote(&voice.url),
+            quote(&voice.model),
+            quote(&voice.voice),
+            quote(&voice.language),
+            join_ids(&voice.channels)
+        ));
+    }
     text
 }
 
@@ -1652,6 +1780,14 @@ mod tests {
                     },
                 ],
             }),
+            voice: Some(VoiceAnswers {
+                api_key: "sk-voice".to_owned(),
+                url: config::DEFAULT_REALTIME_URL.to_owned(),
+                model: config::DEFAULT_REALTIME_MODEL.to_owned(),
+                voice: "cedar".to_owned(),
+                language: "繁體中文".to_owned(),
+                channels: vec![300, 301],
+            }),
             search: Some(SearchAnswers::Searxng {
                 url: "https://search.example.com".to_owned(),
                 auth: Some(("me".to_owned(), "p\"w".to_owned())),
@@ -1699,7 +1835,29 @@ mod tests {
         assert_eq!(discord.allowed_users, [1, 22]);
         assert!(discord.mention_only(Some(100)) && discord.can_talk(Some(100), 2));
         assert_eq!(discord.guilds[&200].allowed_users, config::Users::Everyone);
+        let voice = config.voice.as_ref().expect("voice");
+        assert_eq!(
+            (voice.api_key.as_str(), voice.voice.as_str()),
+            ("sk-voice", "cedar")
+        );
+        assert_eq!(voice.channels, [300, 301]);
+        assert_eq!(voice.language, "繁體中文");
         let mut reopened = Form::new(Some(&config)).expect("form");
+        assert_eq!(reopened.value(VOICE), ENABLED);
+        assert_eq!(reopened.value(VOICE_KEY), "sk-voice");
+        assert_eq!(reopened.value(VOICE_CHANNELS), "300, 301");
+        reopened.step = 1;
+        assert!(reopened.visible().contains(&VOICE_MODEL));
+        reopened.fields[VOICE_URL].value = "https://not-a-socket".to_owned();
+        assert!(
+            reopened.check_step(1).is_err(),
+            "the endpoint is a WebSocket"
+        );
+        reopened.fields[VOICE_URL].value = config::DEFAULT_REALTIME_URL.to_owned();
+        reopened.fields[DISCORD].value = DISABLED.to_owned();
+        assert!(!reopened.visible().contains(&VOICE), "calls need the bot");
+        assert!(reopened.voice().expect("valid").is_none());
+        reopened.fields[DISCORD].value = ENABLED.to_owned();
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
         assert_eq!(reopened.value(VIEWER_PORT), "8765");
@@ -1749,6 +1907,7 @@ mod tests {
             model: "m".to_owned(),
             api_key: "k".to_owned(),
             discord: None,
+            voice: None,
             search: Some(answers),
             log_level: "warn".to_owned(),
             auto_approval: None,

@@ -71,7 +71,8 @@ Mokuzu can answer you in Discord, by DM or in any server channel it can read.
 2. Under **Bot**, turn on **Message Content Intent**. Without it the bot cannot connect.
 3. Invite the bot to your server with the permissions **View Channels**, **Send Messages**,
    **Send Messages in Threads**, **Create Public Threads**, **Read Message History**,
-   **Add Reactions**, **Attach Files**, and **Embed Links**.
+   **Add Reactions**, **Attach Files**, and **Embed Links**, plus **Connect** and **Speak** for
+   voice calls.
 4. Find your Discord user ID: turn on **Developer Mode** in Discord's settings, then right-click
    your name and choose **Copy User ID**.
 5. Run `mokuzu configure`, open the **Discord** page, and enter the token and your user ID.
@@ -103,6 +104,25 @@ How it behaves:
   look at any other page with `view_pdf`, so it sees the tables, figures, and scanned pages its
   text misses.
 - Approvals show up as **Run** and **Deny** buttons.
+
+### Voice calls
+
+With a `[voice]` section (an OpenAI API key; set it on the **Discord** page of `mokuzu
+configure`), send `/voice` in a server while you are in one of its voice channels: mokuzu joins
+and talks with you through OpenAI's Realtime API. The realtime model keeps the conversation going
+and hands anything past small talk to mokuzu's agent, which answers in the channel you sent
+`/voice` from, as text too, with approvals as buttons there; the call reads the answer out.
+`/hangup`, leaving the channel, or telling mokuzu it can go ends the call. You can talk over a
+reply to cut it short.
+
+List voice channel IDs in `channels` to skip `/voice` there: mokuzu joins as soon as someone
+allowed to talk to it joins one, and the agent answers in that channel's text chat.
+
+The bot needs the **Connect** and **Speak** permissions in that voice channel. Discord's voice
+end-to-end encryption (DAVE), which Discord requires, is new in the library mokuzu uses, and a
+join sometimes cannot hear you; mokuzu rejoins on its own when it has not heard you within 15
+seconds, until it can. If it cannot be heard, leave and join again. Audio is billed by OpenAI per
+minute of the call.
 
 ## Running in the background
 
