@@ -29,7 +29,6 @@ echo "  cargo make ci                     - Full CI pipeline: lint, fmt-check, t
 echo "  cargo make clean                  - Remove all build artifacts"
 echo "  cargo make sweep [days]           - Remove build artifacts unused for N days (default 7)"
 echo "  cargo make configure              - Interactive setup: API key, model, Discord"
-echo "  cargo make chat [args]            - Chat in the terminal (cargo run -- chat)"
 echo "  cargo make serve [args]           - Run the Discord bot in the foreground"
 echo "  cargo make service:install        - Install the binary and run it as a service (launchd/systemd)"
 echo "  cargo make service:uninstall      - Remove the service"
@@ -100,11 +99,6 @@ command = "cargo"
 args = ["run", "--package", "mokuzu", "--", "configure", "${@}"]
 
 # --- Run ---
-[tasks.chat]
-description = "Chat in the terminal"
-command = "cargo"
-args = ["run", "--package", "mokuzu", "--", "chat", "${@}"]
-
 [tasks.serve]
 description = "Run the Discord bot in the foreground"
 command = "cargo"
