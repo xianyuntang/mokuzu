@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 
 use rig_core::completion::ToolDefinition;
 
-use crate::db::Memory;
+use crate::db::{Hit, Memory};
 
 /// Total characters across one person's entries; everything here rides along in every request.
 // ponytail: fixed budget; make it configurable if people hit it.
@@ -24,7 +24,10 @@ that same response. Never say you remembered or noted something unless the memor
 succeeded; replying \"noted\" without the call saves nothing. \
 Skip task progress, things that are easy to rediscover, and anything stale within a week. \
 Write declarative facts (\"User prefers short answers\"), not instructions to yourself. \
-When memory is full, replace or merge stale entries instead of skipping the save.";
+When memory is full, replace or merge stale entries instead of skipping the save. \
+When the user refers to something from before that you cannot see (an earlier chat, another \
+thread, \"what I told you\"), call search_history before answering; never say you don't remember \
+without searching.";
 
 /// A change the memory tool asked for, already validated against the current entries.
 #[derive(Debug, PartialEq, Eq)]
@@ -67,8 +70,9 @@ const HIT_CHARS: usize = 500;
 pub fn history_tool() -> ToolDefinition {
     ToolDefinition {
         name: "search_history".to_owned(),
-        description: "Search the earlier messages of this conversation that are no longer in your \
-                      context because a summary replaced them. Use it when the \
+        description: "Search messages that are not in your context: earlier ones of this \
+                      conversation that a summary replaced, and the user's other conversations \
+                      with you (other threads, DMs, voice calls, scheduled runs). Use it when the \
                       user refers to something from before that you cannot see. Finds messages \
                       containing every word of `query` (any language, ASCII case ignored), newest \
                       first. Covers what the user and you wrote, not tool output."
@@ -98,20 +102,34 @@ pub fn history_terms(args: &Value) -> Result<Vec<String>, String> {
 }
 
 /// Search hits as the model sees them.
-pub fn render_hits(hits: &[(String, String, String)]) -> String {
+pub fn render_hits(hits: &[Hit]) -> String {
     if hits.is_empty() {
         return "no earlier messages match".to_owned();
     }
     hits.iter()
-        .map(|(at, role, text)| {
-            let mut short: String = text.chars().take(HIT_CHARS).collect();
-            if short.len() < text.len() {
-                short.push('…');
+        .map(|hit| {
+            let place = if hit.here {
+                ""
+            } else {
+                ", another conversation"
+            };
+            let mut line = format!("[{} {}{place}] {}", hit.at, hit.role, shorten(&hit.text));
+            if let Some(reply) = &hit.reply {
+                line.push_str(&format!("\n[reply] {}", shorten(reply)));
             }
-            format!("[{at} {role}] {short}")
+            line
         })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// `text` cut to `HIT_CHARS` characters.
+fn shorten(text: &str) -> String {
+    let mut short: String = text.chars().take(HIT_CHARS).collect();
+    if short.len() < text.len() {
+        short.push('…');
+    }
+    short
 }
 
 /// The saved entries as they appear in the system prompt.

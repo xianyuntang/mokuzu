@@ -531,7 +531,7 @@ impl Agent {
             .await?;
         let hits = self
             .db
-            .search(self.conversation_id, terms, memory::HISTORY_HITS)
+            .search(self.conversation_id, self.user, terms, memory::HISTORY_HITS)
             .await?;
         Ok(memory::render_hits(&hits))
     }
@@ -822,7 +822,7 @@ impl Agent {
             .map(serde_json::to_value)
             .collect::<Result<Vec<Value>, _>>()?;
         self.db
-            .append(self.conversation_id, turn)
+            .append(self.conversation_id, Some(user), turn)
             .await
             .context("failed to save the conversation")?;
         result
@@ -901,7 +901,11 @@ impl Agent {
     pub async fn overhear(&mut self, who: &str, text: &str) -> Result<()> {
         let message = Message::user(overheard(&now(self.config.timezone), who, text));
         self.db
-            .append(self.conversation_id, vec![serde_json::to_value(&message)?])
+            .append(
+                self.conversation_id,
+                None,
+                vec![serde_json::to_value(&message)?],
+            )
             .await
             .context("failed to save overheard chat")?;
         self.messages.push(message);

@@ -131,6 +131,19 @@ impl Job {
     }
 }
 
+/// A search_history match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hit {
+    /// When it was saved, in UTC.
+    pub at: String,
+    pub role: String,
+    pub text: String,
+    /// Whether it is from the conversation searched from, rather than another of the user's.
+    pub here: bool,
+    /// For a user message, the text of the model's next message after it: usually its answer.
+    pub reply: Option<String>,
+}
+
 /// Row of `todos`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Todo {
@@ -247,18 +260,26 @@ impl Db {
         .await
     }
 
-    /// Appends messages (JSON objects with a `role`) in one transaction.
-    pub async fn append(&self, conversation_id: i64, messages: Vec<Value>) -> Result<()> {
+    /// Appends messages (JSON objects with a `role`) in one transaction. `user` is whose turn
+    /// wrote them, `None` for chat nobody asked the bot about.
+    pub async fn append(
+        &self,
+        conversation_id: i64,
+        user: Option<u64>,
+        messages: Vec<Value>,
+    ) -> Result<()> {
         self.with_conn(move |conn| {
             let tx = conn.transaction()?;
-            insert_messages(&tx, conversation_id, &messages)?;
+            insert_messages(&tx, conversation_id, user, &messages)?;
             tx.commit()?;
             Ok(())
         })
         .await
     }
 
-    /// Replaces the conversation's live history with `messages`, archiving the old rows.
+    /// Replaces the conversation's live history with `messages`, archiving the old rows. The new
+    /// rows belong to nobody: they are a summary, or copies of turns whose archived originals
+    /// already show up in their sender's searches.
     pub async fn rewrite(&self, conversation_id: i64, messages: Vec<Value>) -> Result<()> {
         self.with_conn(move |conn| {
             let tx = conn.transaction()?;
@@ -266,7 +287,7 @@ impl Db {
                 "UPDATE messages SET archived = 1 WHERE conversation_id = ?1",
                 params![conversation_id],
             )?;
-            insert_messages(&tx, conversation_id, &messages)?;
+            insert_messages(&tx, conversation_id, None, &messages)?;
             tx.commit()?;
             Ok(())
         })
@@ -285,22 +306,38 @@ impl Db {
         .await
     }
 
-    /// Archived messages of the conversation whose text contains every one of `terms` (ignoring
-    /// ASCII case), newest first: (sent at, role, text).
+    /// Messages out of the conversation's context whose text contains every one of `terms`
+    /// (ignoring ASCII case), newest first: its archived ones, and `user`'s in any other
+    /// conversation.
     pub async fn search(
         &self,
         conversation_id: i64,
+        user: u64,
         terms: Vec<String>,
         limit: usize,
-    ) -> Result<Vec<(String, String, String)>> {
+    ) -> Result<Vec<Hit>> {
         self.with_conn(move |conn| {
-            let mut sql = "SELECT messages.created_at, messages.role, message_text.text
+            // Tool rounds have no text, so the next assistant row with text is the answer.
+            let mut sql = "SELECT messages.created_at, messages.role, message_text.text,
+                     messages.conversation_id = ?1,
+                     CASE messages.role WHEN 'user' THEN (
+                         SELECT next_text.text
+                         FROM messages AS next JOIN message_text AS next_text
+                             ON next_text.rowid = next.id
+                         WHERE next.conversation_id = messages.conversation_id
+                             AND next.id > messages.id AND next.role = 'assistant'
+                         ORDER BY next.id LIMIT 1
+                     ) END
                  FROM message_text JOIN messages ON messages.id = message_text.rowid
-                 WHERE messages.conversation_id = ? AND messages.archived = 1"
+                 WHERE ((messages.conversation_id = ?1 AND messages.archived = 1)
+                     OR (messages.user_id = ?2 AND messages.conversation_id != ?1))"
                 .to_owned();
             // The trigram index serves LIKE for terms of three or more characters; shorter
-            // ones scan the conversation's rows.
-            let mut values = vec![rusqlite::types::Value::from(conversation_id)];
+            // ones scan the candidate rows.
+            let mut values = vec![
+                rusqlite::types::Value::from(conversation_id),
+                sql_user(user).into(),
+            ];
             for term in terms {
                 sql.push_str(" AND message_text.text LIKE ?");
                 let term = term.replace(['%', '_'], "");
@@ -310,7 +347,13 @@ impl Db {
             values.push(i64::try_from(limit)?.into());
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params_from_iter(values), |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                Ok(Hit {
+                    at: row.get(0)?,
+                    role: row.get(1)?,
+                    text: row.get(2)?,
+                    here: row.get(3)?,
+                    reply: row.get(4)?,
+                })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -503,14 +546,25 @@ impl Db {
     }
 }
 
-fn insert_messages(conn: &Connection, conversation_id: i64, messages: &[Value]) -> Result<()> {
-    let mut stmt =
-        conn.prepare("INSERT INTO messages (conversation_id, role, content) VALUES (?1, ?2, ?3)")?;
+fn insert_messages(
+    conn: &Connection,
+    conversation_id: i64,
+    user: Option<u64>,
+    messages: &[Value],
+) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO messages (conversation_id, role, content, user_id) VALUES (?1, ?2, ?3, ?4)",
+    )?;
     for message in messages {
         let Some(role) = message["role"].as_str() else {
             bail!("message without a role: {message}");
         };
-        stmt.execute(params![conversation_id, role, message.to_string()])?;
+        stmt.execute(params![
+            conversation_id,
+            role,
+            message.to_string(),
+            user.map(sql_user)
+        ])?;
     }
     Ok(())
 }
@@ -553,7 +607,7 @@ mod tests {
             json!({"role": "user", "content": "hi"}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "hello"}]}),
         ];
-        db.append(conversation.id, turn.clone())
+        db.append(conversation.id, Some(7), turn.clone())
             .await
             .expect("append");
         let stored: Vec<Value> = db
@@ -572,12 +626,13 @@ mod tests {
     #[tokio::test]
     async fn search_finds_archived_text_only() {
         let db = Db::open_in_memory().expect("open");
-        let conversation = db.conversation("terminal").await.expect("conversation");
-        let other = db.conversation("discord:1").await.expect("conversation");
+        let conversation = db.conversation("discord:1").await.expect("conversation");
+        let other = db.conversation("discord:2").await.expect("conversation");
         let text = |role: &str, text: &str| json!({"role": role, "content": [{"type": "text", "text": text}]});
         let tool = json!({"role": "user", "content": [{"type": "toolresult", "content": [{"type": "text", "text": "貓咪 tool output"}]}]});
         db.append(
             conversation.id,
+            Some(7),
             vec![
                 text("user", "我家的貓咪叫 Mochi"),
                 tool,
@@ -586,12 +641,13 @@ mod tests {
         )
         .await
         .expect("append");
-        db.append(other.id, vec![text("user", "別人的貓咪")])
+        db.append(other.id, Some(8), vec![text("user", "別人的貓咪")])
             .await
             .expect("append");
         let search = |terms: &[&str]| {
             db.search(
                 conversation.id,
+                7,
                 terms.iter().map(|t| (*t).to_owned()).collect(),
                 10,
             )
@@ -605,14 +661,52 @@ mod tests {
         let hits = search(&["貓咪", "mochi"]).await.expect("search");
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(
-            (hits[0].1.as_str(), hits[0].2.as_str()),
-            ("user", "我家的貓咪叫 Mochi")
+            (
+                hits[0].role.as_str(),
+                hits[0].text.as_str(),
+                hits[0].here,
+                hits[0].reply.as_deref()
+            ),
+            ("user", "我家的貓咪叫 Mochi", true, Some("記住了"))
         );
         assert!(search(&["貓咪", "Luna"]).await.expect("search").is_empty());
         assert_eq!(
             search(&["記"]).await.expect("search").len(),
             1,
             "short terms scan"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_reaches_the_users_other_conversations() {
+        let db = Db::open_in_memory().expect("open");
+        let here = db.conversation("discord:1").await.expect("conversation").id;
+        let thread = db.conversation("discord:2").await.expect("conversation").id;
+        let text =
+            |text: &str| json!({"role": "user", "content": [{"type": "text", "text": text}]});
+        db.append(thread, Some(7), vec![text("那家拉麵店叫一蘭")])
+            .await
+            .expect("append");
+        db.append(thread, Some(8), vec![text("我推薦的拉麵店是天下一品")])
+            .await
+            .expect("append");
+        db.append(thread, None, vec![text("聽說拉麵店很多")])
+            .await
+            .expect("append");
+        let hits = db
+            .search(here, 7, vec!["拉麵店".to_owned()], 10)
+            .await
+            .expect("search");
+        assert_eq!(hits.len(), 1, "only their own messages: {hits:?}");
+        assert_eq!(
+            (hits[0].text.as_str(), hits[0].here),
+            ("那家拉麵店叫一蘭", false)
+        );
+        assert!(
+            db.search(here, 9, vec!["拉麵店".to_owned()], 10)
+                .await
+                .expect("search")
+                .is_empty()
         );
     }
 
@@ -810,7 +904,7 @@ mod tests {
             json!({"role": "user", "content": "old"}),
             json!({"role": "assistant", "content": "reply"}),
         ];
-        db.append(id, old).await.expect("append");
+        db.append(id, Some(7), old).await.expect("append");
         let summary = vec![json!({"role": "user", "content": "summary"})];
         db.rewrite(id, summary.clone()).await.expect("rewrite");
         let live: Vec<Value> = db
@@ -840,7 +934,7 @@ mod tests {
             json!({"role": "user", "content": "ok"}),
             json!({"role": "system", "content": "not allowed"}),
         ];
-        assert!(db.append(id, turn).await.is_err());
+        assert!(db.append(id, Some(7), turn).await.is_err());
         assert!(db.messages(id).await.expect("load").is_empty());
     }
 }
