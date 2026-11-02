@@ -21,6 +21,8 @@ jobs:
           # 22.04 builds against an older glibc (2.35), so the binary also runs on older distros.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
