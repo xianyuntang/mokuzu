@@ -907,8 +907,19 @@ impl Form {
             }
         };
         let old = std::fs::read_to_string(path).ok();
-        let text = merge_mcp(&render_toml(&answers), old.as_deref(), &remove, add);
-        let config = Config::parse(&text).context("form produced an invalid config")?;
+        let mut text = merge_mcp(&render_toml(&answers), old.as_deref(), &remove, add);
+        let mut config = Config::parse(&text).context("form produced an invalid config")?;
+        // A new config comes with the browser; after that it is one more server to keep or remove.
+        if old.is_none() && !config.mcp.contains_key(config::BROWSER_SERVER) {
+            let browser = config::browser_server(&config.database_path);
+            text = merge_mcp(
+                &text,
+                Some(&text),
+                &[],
+                Some((config::BROWSER_SERVER.to_owned(), browser)),
+            );
+            config = Config::parse(&text).context("form produced an invalid config")?;
+        }
 
         config::write(path, &text)?;
         Ok(Some(config))
@@ -1943,7 +1954,9 @@ mod tests {
             form.mcp().is_err(),
             "existing name is refused unless removed"
         );
-        form.fields[MCP_FIRST].value = REMOVE.to_owned();
+        // The migration added the browser too, so linear is the second row.
+        assert_eq!(form.mcp_names, ["browser", "linear"]);
+        form.fields[MCP_FIRST + 1].value = REMOVE.to_owned();
         let (remove, add) = form.mcp().expect("replaces it");
         assert_eq!(remove, ["linear"]);
         assert_eq!(add.expect("added").0, "linear");

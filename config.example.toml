@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 1
+version = 2
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -96,6 +96,14 @@ viewer_port = 22050
 # args = ["-y", "@modelcontextprotocol/server-github"]
 # env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }
 # approve = true
+# The browser mokuzu comes with: invisible-playwright-mcp drives a Firefox patched so sites see an
+# ordinary browser, and keeps sign-ins in STEALTHFOX_PROFILE_DIR. Download its Firefox once with
+# `uvx --from invisible-playwright invisible-playwright fetch`. Remove this table to go without.
+[mcp.servers.browser]
+command = "uvx"
+args = ["invisible-playwright-mcp"]
+env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/Users/you/.local/share/mokuzu/stealthfox" }
+approve = false
 # A remote server over streamable HTTP, with an optional bearer token:
 # [mcp.servers.docs]
 # url = "https://example.com/mcp"

@@ -2,19 +2,21 @@
 //! format change upgrades existing files instead of keeping every old shape loadable. A file's
 //! version is its top-level `version`; files from before versioning are version 0.
 
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
-use toml_edit::{DocumentMut, Item, TableLike, value};
+use toml_edit::{DocumentMut, InlineTable, Item, Table, TableLike, value};
 
 use super::{
     DEFAULT_COMPACT_AT_TOKENS, DEFAULT_MAX_TOKENS, DEFAULT_SCREEN, DEFAULT_VIEWER_PORT, Provider,
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 1;
+pub const VERSION: i64 = 2;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
-const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [spell_out_defaults];
+const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [spell_out_defaults, add_browser];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
 pub fn migrate(text: &str) -> Result<Option<String>> {
@@ -148,6 +150,75 @@ fn spell_out_defaults(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// Name of the browser MCP server mokuzu sets up.
+pub const BROWSER_SERVER: &str = "browser";
+/// The package that server runs; a server whose arguments name it is that browser already.
+const BROWSER_PACKAGE: &str = "invisible-playwright-mcp";
+
+/// `[mcp.servers.browser]`: a Firefox patched so sites see an ordinary browser, drawing on the
+/// virtual desktop when there is no screen, keeping sign-ins in a profile next to `database`.
+pub fn browser_server(database: &Path) -> Table {
+    let profile = database
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("stealthfox");
+    let mut env = InlineTable::new();
+    env.insert("STEALTHFOX_HEADLESS", "0".into());
+    env.insert(
+        "STEALTHFOX_PROFILE_DIR",
+        profile.to_string_lossy().as_ref().into(),
+    );
+    let mut server = Table::new();
+    server["command"] = value("uvx");
+    server["args"] = value(toml_edit::Array::from_iter([BROWSER_PACKAGE]));
+    server["env"] = value(env);
+    // It only browses, so it runs without asking, like `fetch_url`.
+    server["approve"] = value(false);
+    server
+}
+
+/// 1 → 2: mokuzu comes with a browser, as `[mcp.servers.browser]`, unless a server already runs
+/// it or the name is taken.
+fn add_browser(doc: &mut DocumentMut) -> Result<()> {
+    let database = doc
+        .get("database")
+        .and_then(|database| database.get("path"))
+        .and_then(Item::as_str)
+        .context("database.path is missing")?
+        .to_owned();
+    let mcp = implicit_table(doc.as_table_mut(), "mcp")?;
+    let servers = implicit_table(mcp, "servers")?;
+    let runs_it = servers.iter().any(|(_, server)| {
+        server
+            .get("args")
+            .and_then(Item::as_array)
+            .is_some_and(|args| {
+                args.iter()
+                    .any(|arg| arg.as_str().is_some_and(|arg| arg.contains(BROWSER_PACKAGE)))
+            })
+    });
+    if !runs_it && !servers.contains_key(BROWSER_SERVER) {
+        servers.insert(
+            BROWSER_SERVER,
+            Item::Table(browser_server(Path::new(&database))),
+        );
+    }
+    Ok(())
+}
+
+/// The table `name` in `parent`, created without a header of its own when missing.
+fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
+    parent
+        .entry(name)
+        .or_insert_with(|| {
+            let mut table = Table::new();
+            table.set_implicit(true);
+            Item::Table(table)
+        })
+        .as_table_like_mut()
+        .with_context(|| format!("`{name}` in the config is not a table"))
+}
+
 /// The table at `path`, created empty when missing.
 fn table<'a>(doc: &'a mut DocumentMut, path: &[&str]) -> Result<&'a mut dyn TableLike> {
     let mut table: &mut dyn TableLike = doc.as_table_mut();
@@ -179,7 +250,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 1",
+            "version = 2",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -216,6 +287,26 @@ mod tests {
             new.contains("model = \"m\""),
             "reviewer is the main model: {new}"
         );
+    }
+
+    #[test]
+    fn version_1_adds_the_browser_unless_one_is_there() {
+        let old = "version = 1\n[database]\npath = \"/home/me/.local/share/mokuzu/mokuzu.db\"\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(new.contains("[mcp.servers.browser]\ncommand = \"uvx\""), "{new}");
+        assert!(!new.contains("[mcp]\n"), "no empty [mcp] header: {new}");
+        assert!(
+            new.contains("STEALTHFOX_PROFILE_DIR = \"/home/me/.local/share/mokuzu/stealthfox\""),
+            "{new}"
+        );
+        assert!(migrate(&new).expect("valid").is_none(), "already current");
+
+        let mine = format!(
+            "{old}[mcp.servers.stealth]\ncommand = \"uvx\"\nargs = [\"invisible-playwright-mcp\"]\napprove = true\n"
+        );
+        let new = migrate(&mine).expect("valid").expect("migrated");
+        assert!(!new.contains("servers.browser"), "kept the user's own: {new}");
+        assert!(new.contains("approve = true"), "{new}");
     }
 
     #[test]
