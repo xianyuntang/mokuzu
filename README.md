@@ -68,6 +68,14 @@ The script downloads the release for your platform, checks its SHA-256, and puts
 | --- | --- | --- |
 | `MOKUZU_VERSION` | latest | Release tag to install, e.g. `v0.1.0` |
 | `MOKUZU_INSTALL_DIR` | `~/.local/bin` | Where the binary goes |
+| `MOKUZU_DEPS` | ask | `1` installs the system packages below with apt without asking, `0` skips them |
+
+On a first install with apt (Debian, Ubuntu, Raspberry Pi OS), the script offers to install the
+system packages the optional tools need, with `sudo`: `bubblewrap` and Python libraries for
+`run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb` and `ffmpeg` for the
+browser desktop and its live view, and `nodejs`, `npm`, and [uv](https://docs.astral.sh/uv/) for
+MCP servers started with `npx` or `uvx`. Run `mokuzu install` again afterwards so the background
+service finds them.
 
 To upgrade later, run `mokuzu update`. It reinstalls the latest release over the current binary
 and restarts the background service if one is installed.

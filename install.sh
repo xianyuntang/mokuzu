@@ -6,6 +6,7 @@
 # Environment:
 #   MOKUZU_VERSION       release tag to install, e.g. v0.1.0 (default: latest)
 #   MOKUZU_INSTALL_DIR   where the binary goes (default: ~/.local/bin)
+#   MOKUZU_DEPS          1 installs the optional system packages with apt without asking, 0 skips
 #   MOKUZU_DOWNLOAD_BASE base URL holding the release files (default: GitHub releases; for mirrors)
 # The MITTEN_* names from before the project was renamed still work.
 set -eu
@@ -92,6 +93,45 @@ echo "installed $("$dir/mokuzu" --version) to $dir/mokuzu"
 if [ -e "$dir/mitten" ] && [ ! -L "$dir/mitten" ]; then
     ln -sf mokuzu "$dir/mitten"
     echo "mitten is now mokuzu; \`mitten\` still works and runs mokuzu"
+fi
+
+# System packages behind the optional tools: the code sandbox and its Python libraries, CJK
+# fonts for charts, the virtual desktop and its live view, and Node for `npx` MCP servers.
+# Asked on first installs with apt and a terminal; MOKUZU_DEPS=1 installs without asking, 0 skips.
+deps="bubblewrap xvfb ffmpeg python3 python3-pandas python3-numpy python3-matplotlib
+python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm"
+want_deps="${MOKUZU_DEPS:-}"
+if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] &&
+    command -v apt-get >/dev/null 2>&1; then
+    if [ -z "$want_deps" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
+        printf 'install the system packages for sandboxed code, charts, the browser desktop, and\nMCP servers (needs sudo)?\n  %s\n[Y/n] ' "$(echo $deps)" >/dev/tty
+        read -r answer </dev/tty || answer=n
+        case "$answer" in [nN]*) want_deps=0 ;; *) want_deps=1 ;; esac
+    fi
+    if [ "$want_deps" = 1 ]; then
+        sudo=""
+        [ "$(id -u)" = 0 ] || sudo=sudo
+        $sudo apt-get update -q || echo "note: apt-get update failed; trying the install anyway"
+        # Skip names this release doesn't carry, so one missing package doesn't stop the rest.
+        available=""
+        for pkg in $deps; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then
+                available="$available $pkg"
+            else
+                echo "note: $pkg is not available here; skipped"
+            fi
+        done
+        # shellcheck disable=SC2086
+        $sudo apt-get install -y $available || echo "note: some system packages failed to install"
+        if ! command -v uvx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+            echo "installing uv, for MCP servers started with uvx"
+            curl -LsSf https://astral.sh/uv/install.sh | sh || echo "note: uv failed to install"
+        fi
+    else
+        echo "skipped system packages; for every tool, install them later:
+  sudo apt install $(echo $deps)
+  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    fi
 fi
 
 case ":$PATH:" in
