@@ -74,7 +74,7 @@ On a first install with apt (Debian, Ubuntu, Raspberry Pi OS), the script offers
 system packages the optional tools need, with `sudo`: `bubblewrap` and Python libraries for
 `run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb` and `ffmpeg` for the
 browser desktop and its live view, and `nodejs`, `npm`, and [uv](https://docs.astral.sh/uv/) for
-MCP servers started with `npx` or `uvx`. Run `mokuzu install` again afterwards so the background
+MCP servers started with `npx` or `uvx`, and the Firefox of the bundled [browser](#browser). Run `mokuzu install` again afterwards so the background
 service finds them.
 
 To upgrade later, run `mokuzu update`. It reinstalls the latest release over the current binary
@@ -233,19 +233,29 @@ them.
 
 ### Browser
 
-Mokuzu has no browser of its own; give it one over MCP. [invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp)
-drives a Firefox patched so sites see an ordinary browser, and keeps sign-ins in a profile:
+Mokuzu comes with a browser over MCP: [invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp)
+drives a Firefox patched so sites see an ordinary browser, and keeps sign-ins in a profile.
+`mokuzu configure` adds it to a new config, and updating from an older config adds it unless a
+server already runs it:
+
+```toml
+[mcp.servers.browser]
+command = "uvx"
+args = ["invisible-playwright-mcp"]
+env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/home/you/.local/share/mokuzu/stealthfox" }
+approve = false
+```
+
+It needs [uv](https://docs.astral.sh/uv/) and its Firefox, which `install.sh` sets up along with
+the other system packages, or by hand:
 
 ```sh
 uvx --from invisible-playwright invisible-playwright fetch   # downloads its Firefox once
 ```
 
-```toml
-[mcp.servers.stealth]
-command = "uvx"
-args = ["invisible-playwright-mcp"]
-env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/home/you/.local/share/mokuzu/stealthfox" }
-```
+It browses without asking, like `fetch_url`. Set `approve = true` to approve each browser action
+yourself, or to have the reviewer check it in auto mode. Remove the server on the **MCP** page of `mokuzu configure` to go
+without a browser.
 
 On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.

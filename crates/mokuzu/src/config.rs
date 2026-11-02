@@ -9,6 +9,7 @@ use serde::Deserialize;
 mod migrate;
 
 pub use migrate::VERSION;
+pub use migrate::{BROWSER_SERVER, browser_server};
 #[cfg(test)]
 pub use migrate::migrate;
 

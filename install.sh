@@ -96,10 +96,13 @@ if [ -e "$dir/mitten" ] && [ ! -L "$dir/mitten" ]; then
 fi
 
 # System packages behind the optional tools: the code sandbox and its Python libraries, CJK
-# fonts for charts, the virtual desktop and its live view, and Node for `npx` MCP servers.
+# fonts for charts, the virtual desktop and its live view, Node for `npx` MCP servers, and the
+# libraries the browser's Firefox links (Ubuntu 24.04 renamed some with a t64 suffix; the name a
+# release lacks is skipped).
 # Asked on first installs with apt and a terminal; MOKUZU_DEPS=1 installs without asking, 0 skips.
 deps="bubblewrap xvfb ffmpeg python3 python3-pandas python3-numpy python3-matplotlib
-python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm"
+python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm
+libgtk-3-0 libgtk-3-0t64 libdbus-glib-1-2 libasound2 libasound2t64 libxtst6 libx11-xcb1"
 want_deps="${MOKUZU_DEPS:-}"
 if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] &&
     command -v apt-get >/dev/null 2>&1; then
@@ -115,7 +118,8 @@ if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] 
         # Skip names this release doesn't carry, so one missing package doesn't stop the rest.
         available=""
         for pkg in $deps; do
-            if apt-cache show "$pkg" >/dev/null 2>&1; then
+            # A real candidate, not a virtual name another package provides.
+            if apt-cache policy "$pkg" 2>/dev/null | grep -q 'Candidate: [^(]'; then
                 available="$available $pkg"
             else
                 echo "note: $pkg is not available here; skipped"
@@ -127,10 +131,18 @@ if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] 
             echo "installing uv, for MCP servers started with uvx"
             curl -LsSf https://astral.sh/uv/install.sh | sh || echo "note: uv failed to install"
         fi
+        # The browser mokuzu comes with runs a patched Firefox that is downloaded once.
+        uvx="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
+        if [ -x "$uvx" ]; then
+            echo "downloading the browser's Firefox"
+            "$uvx" --from invisible-playwright invisible-playwright fetch ||
+                echo "note: the browser's Firefox failed to download"
+        fi
     else
         echo "skipped system packages; for every tool, install them later:
   sudo apt install $(echo $deps)
-  curl -LsSf https://astral.sh/uv/install.sh | sh"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  uvx --from invisible-playwright invisible-playwright fetch"
     fi
 fi
 
