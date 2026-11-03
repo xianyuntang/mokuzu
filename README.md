@@ -55,7 +55,7 @@ a tuft of seaweed scraps.
 
 ## Install
 
-Linux on arm64 (glibc 2.35 or newer), e.g. a Raspberry Pi. Elsewhere, build from source with
+Linux on arm64 or x86_64 (glibc 2.35 or newer), e.g. a Raspberry Pi. Elsewhere, build from source with
 `cargo install --git https://github.com/xianyuntang/mokuzu mokuzu`.
 
 ```sh
@@ -337,7 +337,7 @@ message; MCP servers, web search, and Discord need a restart.
 
 ### Can I run mokuzu on a Raspberry Pi?
 
-Yes. The release binary is built for Linux on arm64, such as a Raspberry Pi 4 or 5 with a 64-bit
+Yes. The release binaries are built for Linux on arm64 and x86_64; arm64 covers a Raspberry Pi 4 or 5 with a 64-bit
 OS. Other platforms build from source with `cargo install`.
 
 ### Which LLMs does it work with?

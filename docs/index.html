@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mokuzu – Self-Hosted AI Agent and Discord Bot in Rust</title>
+    <meta
+      name="description"
+      content="Mokuzu is an open-source, self-hosted AI agent and Discord bot written in Rust. Text and voice chat, web search, per-person memory, MCP tools, a code sandbox, and cron jobs. Runs on a Raspberry Pi."
+    />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://xianyuntang.github.io/mokuzu/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://xianyuntang.github.io/mokuzu/" />
+    <meta property="og:title" content="Mokuzu – Self-Hosted AI Agent for Discord" />
+    <meta
+      property="og:description"
+      content="Open-source personal AI assistant in Rust: Discord text and voice chat, memory, MCP tools, sandboxed code, and scheduled jobs. Runs on a Raspberry Pi."
+    />
+    <meta property="og:image" content="https://xianyuntang.github.io/mokuzu/icon.png" />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="Mokuzu – Self-Hosted AI Agent for Discord" />
+    <meta name="twitter:description" content="Open-source, self-hosted AI agent and Discord bot in Rust." />
+    <meta name="twitter:image" content="https://xianyuntang.github.io/mokuzu/icon.png" />
+    <link rel="icon" href="icon.png" type="image/png" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f172a;
+        --panel: #111c31;
+        --panel-strong: #17233b;
+        --text: #f1f5f9;
+        --muted: #94a3b8;
+        --border: #334155;
+        --primary: #f97316;
+        --primary-strong: #ea580c;
+        --accent: #fbbf24;
+        --success: #22c55e;
+        --shadow: 0 24px 80px rgba(2, 8, 23, 0.5);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top left, rgba(249, 115, 22, 0.26), transparent 34rem),
+          radial-gradient(circle at top right, rgba(251, 191, 36, 0.14), transparent 30rem),
+          var(--bg);
+        color: var(--text);
+        line-height: 1.6;
+        overflow-x: hidden;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      a:focus-visible,
+      button:focus-visible {
+        outline: 3px solid rgba(251, 191, 36, 0.8);
+        outline-offset: 4px;
+      }
+
+      .container {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      .nav {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        background: rgba(15, 23, 42, 0.82);
+        backdrop-filter: blur(18px);
+      }
+
+      .nav-inner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 72px;
+        gap: 20px;
+      }
+
+      .brand {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+      }
+
+      .brand-mark {
+        display: grid;
+        place-items: center;
+        width: 38px;
+        height: 38px;
+        border: 1px solid rgba(96, 165, 250, 0.4);
+        border-radius: 12px;
+        background: linear-gradient(135deg, #ea580c, #fbbf24);
+        box-shadow: 0 10px 30px rgba(234, 88, 12, 0.35);
+      }
+
+      .nav-links {
+        display: flex;
+        align-items: center;
+        gap: 22px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      .nav-links a:hover {
+        color: var(--text);
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-weight: 700;
+        transition:
+          background 180ms ease,
+          border-color 180ms ease,
+          color 180ms ease;
+      }
+
+      .button-primary {
+        background: var(--primary-strong);
+        color: white;
+        box-shadow: 0 16px 34px rgba(234, 88, 12, 0.32);
+      }
+
+      .button-primary:hover {
+        background: var(--primary);
+      }
+
+      .button-secondary {
+        border-color: rgba(148, 163, 184, 0.28);
+        background: rgba(15, 23, 42, 0.7);
+        color: var(--text);
+      }
+
+      .button-secondary:hover {
+        border-color: rgba(148, 163, 184, 0.55);
+      }
+
+      .hero {
+        padding: 86px 0 72px;
+      }
+
+      .hero-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(360px, 0.86fr);
+        align-items: center;
+        gap: 48px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 12px;
+        border: 1px solid rgba(251, 191, 36, 0.3);
+        border-radius: 999px;
+        background: rgba(251, 191, 36, 0.08);
+        color: #bae6fd;
+        font-size: 0.9rem;
+        font-weight: 700;
+      }
+
+      .eyebrow-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--success);
+        box-shadow: 0 0 18px rgba(34, 197, 94, 0.8);
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin: 0;
+        line-height: 1.05;
+        letter-spacing: -0.05em;
+      }
+
+      h1 {
+        max-width: 760px;
+        margin-top: 22px;
+        font-size: clamp(3rem, 8vw, 5.7rem);
+      }
+
+      .gradient-text {
+        background: linear-gradient(135deg, #f8fafc, #93c5fd 58%, #67e8f9);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+
+      .hero-copy {
+        max-width: 660px;
+        margin: 24px 0 0;
+        color: var(--muted);
+        font-size: 1.2rem;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 14px;
+        margin-top: 34px;
+      }
+
+      .hero-proof {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 18px;
+        margin-top: 28px;
+        color: #cbd5e1;
+        font-size: 0.94rem;
+      }
+
+      .proof-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .check {
+        color: var(--success);
+        font-weight: 900;
+      }
+
+      .terminal-card {
+        overflow: hidden;
+        border: 1px solid rgba(148, 163, 184, 0.22);
+        border-radius: 26px;
+        background: linear-gradient(180deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
+        box-shadow: var(--shadow);
+      }
+
+      .terminal-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        height: 46px;
+        padding: 0 18px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+        background: rgba(15, 23, 42, 0.9);
+      }
+
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 999px;
+      }
+
+      .dot-red {
+        background: #fb7185;
+      }
+
+      .dot-yellow {
+        background: #facc15;
+      }
+
+      .dot-green {
+        background: #22c55e;
+      }
+
+      .terminal-title {
+        margin-left: auto;
+        color: #94a3b8;
+        font-size: 0.85rem;
+      }
+
+      .terminal-body {
+        padding: 22px;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.92rem;
+        color: #dbeafe;
+      }
+
+      .prompt {
+        color: #fbbf24;
+      }
+
+      .muted-line {
+        color: #94a3b8;
+      }
+
+      .green-line {
+        color: #86efac;
+      }
+
+      .terminal-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      .mini-panel {
+        min-height: 112px;
+        padding: 14px;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.65);
+      }
+
+      .mini-panel strong {
+        display: block;
+        margin-bottom: 8px;
+        color: #f8fafc;
+        font-family: inherit;
+      }
+
+      .section {
+        padding: 72px 0;
+      }
+
+      .section-header {
+        max-width: 760px;
+        margin-bottom: 34px;
+      }
+
+      .section-kicker {
+        margin-bottom: 12px;
+        color: var(--accent);
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 0.78rem;
+      }
+
+      h2 {
+        font-size: clamp(2rem, 4.8vw, 3.3rem);
+      }
+
+      .section-copy {
+        max-width: 680px;
+        margin: 16px 0 0;
+        color: var(--muted);
+        font-size: 1.08rem;
+      }
+
+      .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+
+      .feature-card,
+      .faq-card,
+      .compare-card {
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        border-radius: 22px;
+        background: rgba(17, 28, 49, 0.72);
+        box-shadow: 0 18px 50px rgba(2, 8, 23, 0.18);
+      }
+
+      .feature-card {
+        padding: 22px;
+      }
+
+      .icon {
+        display: grid;
+        place-items: center;
+        width: 42px;
+        height: 42px;
+        margin-bottom: 18px;
+        border-radius: 14px;
+        background: rgba(249, 115, 22, 0.16);
+        color: #93c5fd;
+      }
+
+      .feature-card h3,
+      .faq-card h3,
+      .compare-card h3 {
+        font-size: 1.15rem;
+        letter-spacing: -0.02em;
+      }
+
+      .feature-card p,
+      .faq-card p,
+      .compare-card p {
+        margin: 12px 0 0;
+        color: var(--muted);
+      }
+
+      .showcase {
+        display: grid;
+        grid-template-columns: 0.9fr 1.1fr;
+        gap: 18px;
+      }
+
+      .mock-window {
+        overflow: hidden;
+        min-height: 320px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 24px;
+        background: rgba(15, 23, 42, 0.9);
+        box-shadow: var(--shadow);
+      }
+
+      .mock-window.large {
+        grid-row: span 2;
+      }
+
+      .mock-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+        color: #cbd5e1;
+        font-size: 0.9rem;
+      }
+
+      .mock-body {
+        padding: 18px;
+      }
+
+      .connection-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .connection-row,
+      .file-row,
+      .forward-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px;
+        border: 1px solid rgba(148, 163, 184, 0.13);
+        border-radius: 14px;
+        background: rgba(30, 41, 59, 0.72);
+        color: #dbeafe;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 26px;
+        padding: 0 9px;
+        border-radius: 999px;
+        background: rgba(34, 197, 94, 0.12);
+        color: #86efac;
+        font-size: 0.78rem;
+        font-weight: 700;
+      }
+
+      .code-block {
+        margin: 16px 0 0;
+        padding: 18px;
+        border-radius: 16px;
+        background: #020617;
+        color: #bae6fd;
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        font-size: 0.88rem;
+      }
+
+      .compare-grid,
+      .faq-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+
+      .compare-card,
+      .faq-card {
+        padding: 22px;
+      }
+
+      .cta-panel {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 24px;
+        padding: 34px;
+        border: 1px solid rgba(96, 165, 250, 0.32);
+        border-radius: 30px;
+        background:
+          radial-gradient(circle at top left, rgba(249, 115, 22, 0.26), transparent 28rem),
+          rgba(17, 28, 49, 0.9);
+        box-shadow: var(--shadow);
+      }
+
+      .footer {
+        padding: 34px 0;
+        border-top: 1px solid rgba(148, 163, 184, 0.16);
+        color: var(--muted);
+      }
+
+      .footer-inner {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .footer a {
+        color: #cbd5e1;
+      }
+
+      @media (max-width: 900px) {
+        .hero-grid,
+        .showcase,
+        .cta-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .feature-grid,
+        .compare-grid,
+        .faq-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .nav-links a:not(.button) {
+          display: none;
+        }
+      }
+
+      @media (max-width: 620px) {
+        .container {
+          width: min(100% - 24px, 1120px);
+        }
+
+        .hero {
+          padding-top: 54px;
+        }
+
+        .nav-inner {
+          min-height: 64px;
+        }
+
+        .brand span:last-child {
+          display: none;
+        }
+
+        .hero-actions,
+        .hero-actions .button,
+        .cta-panel .button {
+          width: 100%;
+        }
+
+        .feature-grid,
+        .compare-grid,
+        .faq-grid,
+        .terminal-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .terminal-card,
+        .mock-window {
+          border-radius: 18px;
+        }
+
+        .footer-inner {
+          flex-direction: column;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition: none !important;
+        }
+      }
+    </style>
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Mokuzu",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Linux, macOS",
+        "description": "A self-hosted AI agent and Discord bot in Rust with text and voice chat, web search, memory, MCP tools, a code sandbox, and cron jobs.",
+        "downloadUrl": "https://github.com/xianyuntang/mokuzu/releases",
+        "license": "https://github.com/xianyuntang/mokuzu#license",
+        "url": "https://xianyuntang.github.io/mokuzu/",
+        "codeRepository": "https://github.com/xianyuntang/mokuzu",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+      }
+    </script>
+  </head>
+  <body>
+    <nav class="nav" aria-label="Main navigation">
+      <div class="container nav-inner">
+        <a class="brand" href="#top" aria-label="Mokuzu home">
+          <img src="icon.png" alt="" width="34" height="34" style="border-radius: 10px" />
+          <span>Mokuzu</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#install">Install</a>
+          <a href="#faq">FAQ</a>
+          <a class="button button-secondary" href="https://github.com/xianyuntang/mokuzu">GitHub</a>
+        </div>
+      </div>
+    </nav>
+
+    <main id="top">
+      <section class="hero">
+        <div class="container hero-grid">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-dot"></span>Open source · One Rust binary · Runs on a Raspberry Pi</div>
+            <h1><span class="gradient-text">Self-hosted AI agent</span> for Discord.</h1>
+            <p class="hero-copy">
+              Mokuzu is a personal AI assistant that runs on your own machine and talks with you as a
+              Discord bot, in text and in voice channels. It searches the web, remembers what you tell it,
+              calls MCP tools, runs code in a sandbox, and runs scheduled jobs.
+            </p>
+            <div class="hero-actions">
+              <a class="button button-primary" href="#install">Install</a>
+              <a class="button button-secondary" href="https://github.com/xianyuntang/mokuzu">View source on GitHub</a>
+            </div>
+            <div class="hero-proof" aria-label="Product highlights">
+              <span class="proof-item"><span class="check">✓</span> Text + voice chat</span>
+              <span class="proof-item"><span class="check">✓</span> MCP tools</span>
+              <span class="proof-item"><span class="check">✓</span> Asks before it acts</span>
+            </div>
+          </div>
+
+          <div class="terminal-card" aria-label="Mokuzu Discord conversation preview" role="img">
+            <div class="terminal-bar">
+              <span class="dot dot-red"></span>
+              <span class="dot dot-yellow"></span>
+              <span class="dot dot-green"></span>
+              <span class="terminal-title">#general · mokuzu</span>
+            </div>
+            <div class="terminal-body">
+              <div><span class="prompt">you</span> any open PRs waiting on me?</div>
+              <div class="muted-line">calling github.search_pull_requests…</div>
+              <div class="green-line">2 PRs need your review</div>
+              <br />
+              <div><span class="prompt">you</span> remind me at 5pm</div>
+              <div class="green-line">✓ reminder set for 17:00</div>
+              <div class="terminal-grid">
+                <div class="mini-panel">
+                  <strong>Memory</strong>
+                  <div class="muted-line">per person</div>
+                  <div>prefers Rust</div>
+                  <div class="green-line">saved</div>
+                </div>
+                <div class="mini-panel">
+                  <strong>Sandbox</strong>
+                  <div>python chart.py</div>
+                  <div class="muted-line">no network</div>
+                  <div class="green-line">chart.png</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="features" class="section">
+        <div class="container">
+          <div class="section-header">
+            <div class="section-kicker">Features</div>
+            <h2>A personal assistant that lives in your Discord.</h2>
+            <p class="section-copy">
+              One binary, one SQLite database, and a background service on Linux or macOS.
+            </p>
+          </div>
+          <div class="feature-grid">
+            <article class="feature-card">
+              <h3>Discord-native</h3>
+              <p>DMs, server channels, a thread per conversation, slash commands, approval buttons, and an allow list for each server.</p>
+            </article>
+            <article class="feature-card">
+              <h3>Voice chat</h3>
+              <p>Talk with it in a Discord voice channel through OpenAI's Realtime API. Voice messages are transcribed.</p>
+            </article>
+            <article class="feature-card">
+              <h3>Memory per person</h3>
+              <p>Notes, skills, and todos for each user, plus search over past conversations in any language.</p>
+            </article>
+            <article class="feature-card">
+              <h3>Tools and MCP</h3>
+              <p>Web search, web pages, PDF, Word, and PowerPoint files, a browser, and any MCP server such as GitHub or Linear.</p>
+            </article>
+            <article class="feature-card">
+              <h3>Sandboxed code</h3>
+              <p>Python and shell in a bubblewrap sandbox with no network, for data analysis, charts, and file conversion.</p>
+            </article>
+            <article class="feature-card">
+              <h3>Automation</h3>
+              <p>Cron jobs, reminders, webhooks, and a heartbeat that follows up on open todos on its own.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="section-header">
+            <div class="section-kicker">Why mokuzu</div>
+            <h2>An AI agent without a shell on your machine.</h2>
+          </div>
+          <div class="compare-grid">
+            <article class="compare-card">
+              <h3>Mokuzu vs OpenClaw</h3>
+              <p>Mokuzu reads freely, writes only to its own workspace, and asks before anything else, instead of giving the model a shell.</p>
+            </article>
+            <article class="compare-card">
+              <h3>Built for Discord first</h3>
+              <p>A whole server can share one bot while each person keeps their own memory, and you can talk with it in a voice channel.</p>
+            </article>
+            <article class="compare-card">
+              <h3>Your choice of model</h3>
+              <p>Claude through the Anthropic API, OpenCode Go, or your GitHub Copilot or OpenAI ChatGPT subscription through OAuth.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="section">
+        <div class="container">
+          <div class="section-header">
+            <div class="section-kicker">Install</div>
+            <h2>Up and running in three commands.</h2>
+            <p class="section-copy">Prebuilt for Linux on arm64 and x86_64 (glibc 2.35 or newer). Elsewhere, build from source with <code>cargo install</code>.</p>
+          </div>
+          <div class="code-block">
+            curl -fsSL https://raw.githubusercontent.com/xianyuntang/mokuzu/main/install.sh | sh<br />
+            mokuzu configure<br />
+            mokuzu install
+          </div>
+        </div>
+      </section>
+
+      <section id="faq" class="section">
+        <div class="container">
+          <div class="section-header">
+            <div class="section-kicker">FAQ</div>
+            <h2>Common questions.</h2>
+          </div>
+          <div class="faq-grid">
+            <article class="faq-card">
+              <h3>Can I run mokuzu on a Raspberry Pi?</h3>
+              <p>Yes. The release binary runs on a Raspberry Pi 4 or 5 with a 64-bit OS.</p>
+            </article>
+            <article class="faq-card">
+              <h3>Is it safe to run on my own machine?</h3>
+              <p>Its own tools cannot change anything outside its workspace, and code runs in a sandbox without network. MCP calls and settings changes need your approval.</p>
+            </article>
+            <article class="faq-card">
+              <h3>Is mokuzu free?</h3>
+              <p>Yes. It is open source under MIT or Apache-2.0. You pay your model provider for what it uses.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="container">
+          <div class="cta-panel">
+            <div>
+              <div class="section-kicker">Get started</div>
+              <h2>Run your own AI agent today.</h2>
+              <p class="section-copy">Read the setup guide and download the latest release on GitHub.</p>
+            </div>
+            <a class="button button-primary" href="https://github.com/xianyuntang/mokuzu#quick-start">Read the guide</a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="container footer-inner">
+        <span>Mokuzu is open source under MIT or Apache-2.0.</span>
+        <span><a href="https://github.com/xianyuntang/mokuzu">GitHub</a> · <a href="https://github.com/xianyuntang/mokuzu/releases">Releases</a></span>
+      </div>
+    </footer>
+  </body>
+</html>
