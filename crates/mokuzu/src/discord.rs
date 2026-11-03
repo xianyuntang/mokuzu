@@ -24,11 +24,10 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::agent::{self, Agent, Io, Stop, Stopped};
 use crate::config::{Config, DiscordSection, VoiceSection};
-use crate::cron;
-use crate::db::{Db, Hook, Job, Todo};
+use crate::cron::{self, Quiet};
+use crate::db::{Db, Hook, Job};
 use crate::document;
 use crate::mcp::Mcp;
-use crate::todo::{self, Quiet};
 use crate::voice;
 use crate::webhook;
 
@@ -139,8 +138,7 @@ pub async fn serve(config: Config) -> Result<()> {
     client.start().await.context("Discord connection failed")
 }
 
-/// Jobs (`job:<id>`) and heartbeats (`heartbeat:<target>:<user>`) with a run in progress; one
-/// that comes due again while running is skipped.
+/// Jobs (`job:<id>`) with a run in progress; one that comes due again while running is skipped.
 static RUNNING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
 /// Marks `key` running until dropped; `None` if it already is.
@@ -165,106 +163,13 @@ impl Drop for Running {
     }
 }
 
-/// Starts every due job, and every `todo::HEARTBEAT` a check of open todos, forever. A job missed
-/// while mokuzu was down runs once on startup; the first heartbeat waits a full interval.
+/// Starts every due job, forever. A job missed while mokuzu was down runs once on startup.
 async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     let mut tick = tokio::time::interval(CRON_TICK);
-    let mut heartbeat = tokio::time::interval_at(
-        tokio::time::Instant::now() + todo::HEARTBEAT,
-        todo::HEARTBEAT,
-    );
     loop {
-        tokio::select! {
-            _ = tick.tick() => {
-                if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
-                    tracing::warn!("scheduler tick failed: {err:#}");
-                }
-            }
-            _ = heartbeat.tick() => {
-                if let Err(err) = start_heartbeats(&config, &db, &mcp, &http).await {
-                    tracing::warn!("heartbeat failed: {err:#}");
-                }
-            }
-        }
-    }
-}
-
-/// Starts one heartbeat per person and Discord conversation with open todos. Nobody with no
-/// todos means no model call.
-async fn start_heartbeats(
-    config: &Config,
-    db: &Db,
-    mcp: &Arc<Mcp>,
-    http: &Arc<Http>,
-) -> Result<()> {
-    let mut groups: HashMap<(u64, String), Vec<Todo>> = HashMap::new();
-    for todo in db.all_todos().await? {
-        groups
-            .entry((todo.user, todo.target.clone()))
-            .or_default()
-            .push(todo);
-    }
-    for ((user, target), todos) in groups {
-        let key = format!("heartbeat:{target}:{user}");
-        let Some(running) = Running::start(key.clone()) else {
-            tracing::info!(key, "skipping a heartbeat: the last one has not finished");
-            continue;
-        };
-        let (config, db, mcp, http) = (
-            config.clone(),
-            db.clone(),
-            Arc::clone(mcp),
-            Arc::clone(http),
-        );
-        tokio::spawn(async move {
-            run_heartbeat(config, db, mcp, http, key, user, target, todos).await;
-            drop(running);
-        });
-    }
-    Ok(())
-}
-
-/// Works through `user`'s `todos` written in the conversation `target`, in a fresh conversation
-/// `key`, and posts there only if the agent has something to say.
-#[tracing::instrument(skip_all, fields(key))]
-#[allow(clippy::too_many_arguments)]
-async fn run_heartbeat(
-    config: Config,
-    db: Db,
-    mcp: Arc<Mcp>,
-    http: Arc<Http>,
-    key: String,
-    user: u64,
-    target: String,
-    todos: Vec<Todo>,
-) {
-    let Some(mut io) = unattended_io(http, &target) else {
-        return;
-    };
-    let now = chrono::Utc::now().with_timezone(&config.timezone);
-    let mut quiet = Quiet::new(&mut io);
-    let run = async {
-        let mut agent = Agent::new(config, db, mcp, &key).await?;
-        agent.reset().await?;
-        agent.posts_to(&target);
-        agent
-            .run_turn(
-                &todo::heartbeat_prompt(&todos, now),
-                Vec::new(),
-                user,
-                &mut quiet,
-            )
-            .await?;
-        quiet.finish().await
-    };
-    match run.await {
-        Ok(true) => {}
-        Ok(false) => tracing::debug!("heartbeat had nothing to say"),
-        Err(err) => {
-            tracing::warn!("heartbeat failed: {err:#}");
-            if let Err(err) = io.say(&format!("error: todo check failed: {err:#}")).await {
-                tracing::error!("failed to report heartbeat failure: {err:#}");
-            }
+        tick.tick().await;
+        if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
+            tracing::warn!("scheduler tick failed: {err:#}");
         }
     }
 }
@@ -342,26 +247,35 @@ async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Jo
     let Some(mut io) = unattended_io(http, &job.target) else {
         return;
     };
+    // A run that replies `cron::SILENT` posts nothing, its `⏰ job` note included.
+    let mut quiet = Quiet::new(&mut io);
     let run = async {
-        io.note(&format!("⏰ job #{} {}", job.id, job.name)).await?;
+        quiet
+            .note(&format!("⏰ job #{} {}", job.id, job.name))
+            .await?;
         let mut agent = Agent::new(config, db, mcp, &format!("cron:{}", job.id)).await?;
         // The last run's transcript stays on disk until the next one starts.
         agent.reset().await?;
         agent.posts_to(&job.target);
         agent
-            .run_turn(&cron::prompt(&job), Vec::new(), job.user, &mut io)
-            .await
+            .run_turn(&cron::prompt(&job), Vec::new(), job.user, &mut quiet)
+            .await?;
+        quiet.finish().await
     };
-    if let Err(err) = run.await {
-        tracing::warn!("job failed: {err:#}");
-        if let Err(err) = io
-            .say(&format!(
-                "error: job #{} {} failed: {err:#}",
-                job.id, job.name
-            ))
-            .await
-        {
-            tracing::error!("failed to report job failure: {err:#}");
+    match run.await {
+        Ok(true) => {}
+        Ok(false) => tracing::debug!(job = job.id, "job had nothing to say"),
+        Err(err) => {
+            tracing::warn!("job failed: {err:#}");
+            if let Err(err) = io
+                .say(&format!(
+                    "error: job #{} {} failed: {err:#}",
+                    job.id, job.name
+                ))
+                .await
+            {
+                tracing::error!("failed to report job failure: {err:#}");
+            }
         }
     }
 }

@@ -1,7 +1,9 @@
 //! Scheduled jobs: a prompt that runs on its own at set times, each run in a fresh conversation,
 //! and posts its result where the job was made. Only `mokuzu serve` runs jobs, so only Discord
-//! conversations get the tool.
+//! conversations get the tool. A run that replies `SILENT` posts nothing, so a repeating job can
+//! watch for something and speak only when it happens.
 
+use anyhow::Result;
 use chrono::{DateTime, NaiveDateTime, TimeZone as _};
 use chrono_tz::Tz;
 use croner::Cron;
@@ -9,7 +11,11 @@ use croner::parser::{CronParser, Seconds, Year};
 use rig_core::completion::ToolDefinition;
 use serde_json::{Value, json};
 
+use crate::agent::Io;
 use crate::db::Job;
+
+/// A run's reply when there is nothing to tell; it is not posted.
+pub const SILENT: &str = "NO_REPLY";
 
 /// Format of `at`, read in the configured time zone.
 const AT_FORMAT: &str = "%Y-%m-%d %H:%M";
@@ -23,7 +29,10 @@ pub fn tool() -> ToolDefinition {
                       every job; `remove` deletes one by `id` or `name`; `update` finds one the same way and \
                       replaces its `prompt`, its timing (`cron` or `at`), or both; `run` finds one the same \
                       way and runs it once now, as a trial, without changing its schedule. Times are in the user's time zone; \
-                      the date is in each message's [sent ...] stamp."
+                      the date is in each message's [sent ...] stamp. To watch for something \
+                      (a merge, a price, a notice), add a repeating job whose prompt checks it, \
+                      replies NO_REPLY while nothing has changed, and once it happens tells the \
+                      user and removes this job."
             .to_owned(),
         parameters: json!({
             "type": "object",
@@ -225,7 +234,9 @@ pub fn prompt(job: &Job) -> String {
     format!(
         "[Scheduled job #{} {} ({}). You are running on your own in a fresh conversation; nobody is \
          watching live and actions that need approval will be denied. Do the task and reply with \
-         the result, in the user's language (from saved facts, else the task's), not this note's.]\n\n{}",
+         the result, in the user's language (from saved facts, else the task's), not this note's. \
+         If the task says to stay quiet while nothing has changed and nothing has, reply exactly \
+         {SILENT} and nothing else; it is not posted.]\n\n{}",
         job.id,
         job.name,
         job.schedule.as_deref().unwrap_or("once"),
@@ -233,9 +244,142 @@ pub fn prompt(job: &Job) -> String {
     )
 }
 
+/// Whether a run's last reply means "nothing to say".
+pub fn is_silent(reply: &str) -> bool {
+    reply.trim() == SILENT
+}
+
+/// What a run said, held back until it is known whether to post it.
+enum Held {
+    Say(String),
+    Note(String),
+    Ran(String, bool),
+}
+
+/// Wraps `inner`, holding back replies and notes until `finish`, which drops them all when the
+/// last reply is `SILENT` or there is none. Approvals and files go straight through.
+pub struct Quiet<'a, I> {
+    inner: &'a mut I,
+    held: Vec<Held>,
+}
+
+impl<'a, I: Io> Quiet<'a, I> {
+    pub fn new(inner: &'a mut I) -> Self {
+        Self {
+            inner,
+            held: Vec::new(),
+        }
+    }
+
+    /// Posts what was held unless there is no reply or the last one is `SILENT`; true if it
+    /// posted.
+    pub async fn finish(self) -> Result<bool> {
+        let last_reply = self.held.iter().rev().find_map(|held| match held {
+            Held::Say(text) => Some(text.as_str()),
+            _ => None,
+        });
+        if last_reply.is_none_or(is_silent) {
+            return Ok(false);
+        }
+        for held in self.held {
+            match held {
+                Held::Say(text) if !is_silent(&text) => self.inner.say(&text).await?,
+                Held::Say(_) => {}
+                Held::Note(text) => self.inner.note(&text).await?,
+                Held::Ran(output, ok) => self.inner.ran(&output, ok).await?,
+            }
+        }
+        Ok(true)
+    }
+}
+
+impl<I: Io> Io for Quiet<'_, I> {
+    async fn say(&mut self, text: &str) -> Result<()> {
+        self.held.push(Held::Say(text.to_owned()));
+        Ok(())
+    }
+
+    async fn confirm(&mut self, action: &str) -> Result<bool> {
+        self.inner.confirm(action).await
+    }
+
+    async fn note(&mut self, text: &str) -> Result<()> {
+        self.held.push(Held::Note(text.to_owned()));
+        Ok(())
+    }
+
+    async fn ran(&mut self, output: &str, ok: bool) -> Result<()> {
+        self.held.push(Held::Ran(output.to_owned(), ok));
+        Ok(())
+    }
+
+    async fn send_file(&mut self, name: &str, bytes: Vec<u8>) -> Result<()> {
+        self.inner.send_file(name, bytes).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct Seen(Vec<String>);
+
+    impl Io for Seen {
+        async fn say(&mut self, text: &str) -> Result<()> {
+            self.0.push(format!("say {text}"));
+            Ok(())
+        }
+        async fn confirm(&mut self, _action: &str) -> Result<bool> {
+            Ok(false)
+        }
+        async fn note(&mut self, text: &str) -> Result<()> {
+            self.0.push(format!("note {text}"));
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn quiet_drops_silent_runs_and_replays_the_rest() {
+        let mut seen = Seen::default();
+        let mut quiet = Quiet::new(&mut seen);
+        quiet.note("⏰ job #3 Watch CI").await.expect("note");
+        quiet.say(" NO_REPLY ").await.expect("say");
+        assert!(!quiet.finish().await.expect("finish"));
+        assert!(seen.0.is_empty());
+
+        let mut quiet = Quiet::new(&mut seen);
+        quiet.note("⏰ job #3 Watch CI").await.expect("note");
+        assert!(!quiet.finish().await.expect("finish"));
+        assert!(seen.0.is_empty());
+
+        let mut quiet = Quiet::new(&mut seen);
+        quiet.say("NO_REPLY").await.expect("say");
+        quiet.note("⏰ removed #3 Watch CI").await.expect("note");
+        quiet.say("PR #12 is green.").await.expect("say");
+        assert!(quiet.finish().await.expect("finish"));
+        assert_eq!(
+            seen.0,
+            ["note ⏰ removed #3 Watch CI", "say PR #12 is green."]
+        );
+    }
+
+    #[test]
+    fn prompt_offers_silence() {
+        let job = Job {
+            id: 3,
+            user: 7,
+            target: "discord:1".to_owned(),
+            name: "Watch CI".to_owned(),
+            prompt: "check PR #12".to_owned(),
+            schedule: Some("*/30 * * * *".to_owned()),
+            next_run: 0,
+        };
+        let text = prompt(&job);
+        assert!(text.starts_with("[Scheduled job #3 Watch CI (*/30 * * * *)."));
+        assert!(text.contains("reply exactly NO_REPLY"));
+        assert!(text.ends_with("check PR #12"));
+    }
 
     fn at(text: &str) -> DateTime<Tz> {
         let naive = NaiveDateTime::parse_from_str(text, AT_FORMAT).expect("time");

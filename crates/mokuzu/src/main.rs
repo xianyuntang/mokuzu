@@ -20,7 +20,6 @@ mod service;
 mod settings;
 mod skill;
 mod swarm;
-mod todo;
 mod voice;
 mod webhook;
 

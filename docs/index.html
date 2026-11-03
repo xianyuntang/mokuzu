@@ -142,6 +142,7 @@
       .who time { color: var(--dc-soft); font-size: 12px; font-weight: 400; margin-left: 6px; }
       .block { margin: 8px 0 0; background: #2b2d31; border: 1px solid #1e1f22; border-radius: 4px; padding: 8px 10px; font-family: Consolas, "Andale Mono", monospace; /* taste-skill-ignore: a real Discord code block */ font-size: 13px; line-height: 1.35; color: var(--dc-text); white-space: pre; overflow-x: auto; }
       .status { margin-top: 4px; }
+      .dc-quote { margin-top: 4px; padding-left: 12px; border-left: 4px solid #4e5058; }
       .status:empty { display: none; }
       .reply { margin-top: 10px; }
       .ask { margin-top: 10px; background: var(--dc-side); border-left: 4px solid #f0b232; border-radius: 4px; padding: 12px 14px; }
@@ -216,22 +217,11 @@
       .side-photo img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; }
       .side-photo figcaption { font-size: var(--step-small); color: var(--muted); margin-top: 10px; }
       .row.quiet p { font-size: var(--step-lead); line-height: 1.3; max-width: 34ch; }
-      .todo { display: flex; align-items: center; gap: 14px; background: var(--dc-bg); color: var(--dc-text); border-radius: 8px; padding: 16px 18px; font-size: 15px; min-height: 76px; }
-      .box { flex: none; width: 22px; height: 22px; border-radius: 4px; border: 2px solid var(--dc-soft); display: grid; place-items: center; }
-      .todo.done .box { background: var(--dc-green); border-color: var(--dc-green); }
-      .todo.done .box::after { content: ""; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-1px, -1px); }
-      .todo .text { flex: 1; min-width: 0; }
-      .todo .title { color: #f2f3f5; font-weight: 600; }
-      .todo.done .title { text-decoration: line-through; color: var(--dc-soft); }
-      .todo small { display: block; color: var(--dc-soft); font-size: 13px; }
-      .todo.done small { color: #57f287; }
-      .todo.hover { outline: 2px solid var(--dc-blurple); }
       @media (max-width: 900px) {
         .showcase .grid { display: block; }
         .showcase h2 { margin-bottom: 32px; }
         .row { margin-bottom: 8px; overflow: hidden; }
         .state-word { text-align: left; font-size: var(--step-body); margin: 10px 0 40px; }
-        .todo { min-width: 520px; }
         .side-photo { margin-top: 24px; }
       }
 
@@ -401,9 +391,9 @@
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/voice</span><span class="cmd-desc">Talk with it in a Discord voice channel through OpenAI's Realtime API. Voice messages you send are transcribed.</span></button></li>
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/cast</span><span class="cmd-desc">Send out up to ten crabs at once to research something broad, then get one answer back.</span></button></li>
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/browser</span><span class="cmd-desc">Get a link to a live view of the desktop its browser draws on, and watch it work.</span></button></li>
-          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remember this</span><span class="cmd-desc">Notes, skills and todos for each person, plus search over past conversations, in any language.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remember this</span><span class="cmd-desc">Notes and skills for each person, plus search over past conversations, in any language.</span></button></li>
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">run the numbers</span><span class="cmd-desc">Python and shell in a bubblewrap sandbox with no network, for data analysis, charts and file conversion.</span></button></li>
-          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remind me at five</span><span class="cmd-desc">Cron jobs, reminders and webhooks. A heartbeat follows up on open todos on its own.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remind me at five</span><span class="cmd-desc">Cron jobs, reminders and webhooks. A repeating job can watch for something and stay quiet until it happens.</span></button></li>
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">search the web</span><span class="cmd-desc">Web search through SearXNG or Brave, web pages, PDF, Word and PowerPoint files, and any MCP server.</span></button></li>
           <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/stop</span><span class="cmd-desc">Cut short whatever it is doing in this conversation.</span></button></li>
         </ul>
@@ -435,19 +425,19 @@
         </div>
       </section>
 
-      <section class="wrap showcase" aria-labelledby="todo-h">
+      <section class="wrap showcase" aria-labelledby="watch-h">
         <div class="grid">
-          <h2 id="todo-h" data-reveal>It follows up</h2>
+          <h2 id="watch-h" data-reveal>It watches for you</h2>
           <div class="row" style="grid-row:2; --d:1" data-ui data-reveal>
-            <div class="dc"><div class="who">mokuzu <time>15:02</time></div><div>Opened PR #214. I'll keep an eye on its CI.</div></div>
+            <div class="dc"><div class="who">mokuzu <time>15:02</time></div><div>⏰ scheduled #12 Watch CI on PR #214 (*/30 * * * *, next 2026-11-03 15:30)</div><div class="dc-quote">Check the CI of PR #214. If it is still running, reply NO_REPLY. Once it passes or fails, tell me and remove this job.</div></div>
           </div>
-          <p class="state-word" style="grid-row:2" data-reveal>Opened</p>
+          <p class="state-word" style="grid-row:2" data-reveal>Asked</p>
           <div class="row quiet" style="grid-row:3; --d:2" data-reveal>
-            <p>Every 30 minutes a heartbeat checks the open todo in a fresh conversation. While nothing has changed, it posts nothing.</p>
+            <p>Every 30 minutes the job runs in a fresh conversation. While CI is still running it replies NO_REPLY, and nothing is posted.</p>
           </div>
           <p class="state-word" style="grid-row:3" data-reveal>Quiet</p>
           <div class="row" style="grid-row:4; --d:3" data-ui data-reveal>
-            <div class="dc"><div class="who">mokuzu <time>16:30</time></div><div>CI on PR #214 passed: all 4 jobs green. Marked it done.</div></div>
+            <div class="dc"><div class="who">mokuzu <time>16:30</time></div><div>CI on PR #214 passed: all 4 jobs green.</div><div class="status">⏰ removed #12 Watch CI on PR #214</div></div>
           </div>
           <p class="state-word" style="grid-row:4" data-reveal>Done</p>
           <figure class="side-photo" data-reveal style="--d:2">

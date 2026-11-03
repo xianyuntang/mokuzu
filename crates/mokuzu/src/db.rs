@@ -12,7 +12,6 @@ use serde_json::Value;
 
 use crate::cron::NewJob;
 use crate::memory::Edit;
-use crate::todo::Edit as TodoEdit;
 
 /// One `<number>-<name>/up.sql` per migration, applied in number order; `user_version` records how
 /// many have run. Add a directory with the next number; never edit one that shipped.
@@ -169,28 +168,6 @@ pub struct Hit {
     pub here: bool,
     /// For a user message, the text of the model's next message after it: usually its answer.
     pub reply: Option<String>,
-}
-
-/// Row of `todos`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Todo {
-    pub id: i64,
-    /// Discord user it belongs to.
-    pub user: u64,
-    /// Conversation key it was written in, where the heartbeat posts about it.
-    pub target: String,
-    pub content: String,
-}
-
-impl Todo {
-    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: row.get("id")?,
-            user: row.get::<_, i64>("user_id")?.cast_unsigned(),
-            target: row.get("target")?,
-            content: row.get("content")?,
-        })
-    }
 }
 
 /// A Discord user ID as SQLite's signed integer; the cast keeps every bit, so it reads back exactly.
@@ -580,54 +557,6 @@ impl Db {
     }
 }
 
-impl Db {
-    /// `user`'s todos, oldest first.
-    pub async fn todos(&self, user: u64) -> Result<Vec<Todo>> {
-        self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, user_id, target, content FROM todos WHERE user_id = ?1 ORDER BY id",
-            )?;
-            let rows = stmt.query_map(params![sql_user(user)], Todo::from_row)?;
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-        })
-        .await
-    }
-
-    /// Everyone's todos, oldest first, for the heartbeat.
-    pub async fn all_todos(&self) -> Result<Vec<Todo>> {
-        self.with_conn(move |conn| {
-            let mut stmt =
-                conn.prepare("SELECT id, user_id, target, content FROM todos ORDER BY id")?;
-            let rows = stmt.query_map([], Todo::from_row)?;
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-        })
-        .await
-    }
-
-    /// Applies `edit` to `user`'s todos; a new one is posted about in `target`. Ids of someone
-    /// else's todos match nothing.
-    pub async fn save_todo(&self, user: u64, target: String, edit: TodoEdit) -> Result<()> {
-        self.with_conn(move |conn| {
-            match edit {
-                TodoEdit::Add(content) => conn.execute(
-                    "INSERT INTO todos (user_id, target, content) VALUES (?1, ?2, ?3)",
-                    params![sql_user(user), target, content],
-                )?,
-                TodoEdit::Update { id, content } => conn.execute(
-                    "UPDATE todos SET content = ?2 WHERE id = ?1 AND user_id = ?3",
-                    params![id, content, sql_user(user)],
-                )?,
-                TodoEdit::Done(id) => conn.execute(
-                    "DELETE FROM todos WHERE id = ?1 AND user_id = ?2",
-                    params![id, sql_user(user)],
-                )?,
-            };
-            Ok(())
-        })
-        .await
-    }
-}
-
 fn insert_messages(
     conn: &Connection,
     conversation_id: i64,
@@ -919,43 +848,6 @@ mod tests {
         assert!(db.remove_job(sooner).await.expect("remove"));
         assert!(!db.remove_job(sooner).await.expect("remove again"));
         assert_eq!(ids(db.jobs().await.expect("load")), [later]);
-    }
-
-    #[tokio::test]
-    async fn todos_are_per_user() {
-        let db = Db::open_in_memory().expect("open");
-        let add = |content: &str| TodoEdit::Add(content.to_owned());
-        db.save_todo(7, "discord:1".to_owned(), add("report"))
-            .await
-            .expect("add");
-        db.save_todo(6, "discord:2".to_owned(), add("mine"))
-            .await
-            .expect("add");
-        let todos = db.todos(7).await.expect("load");
-        assert_eq!(todos.len(), 1);
-        let todo = &todos[0];
-        assert_eq!(
-            (todo.target.as_str(), todo.content.as_str()),
-            ("discord:1", "report")
-        );
-        let other = db.todos(6).await.expect("load")[0].id;
-        db.save_todo(7, String::new(), TodoEdit::Done(other))
-            .await
-            .expect("someone else's");
-        assert_eq!(db.all_todos().await.expect("load").len(), 2);
-        let update = TodoEdit::Update {
-            id: todo.id,
-            content: "report, draft sent".to_owned(),
-        };
-        db.save_todo(7, String::new(), update)
-            .await
-            .expect("update");
-        let todos = db.todos(7).await.expect("load");
-        assert_eq!(todos[0].content, "report, draft sent");
-        db.save_todo(7, String::new(), TodoEdit::Done(todo.id))
-            .await
-            .expect("done");
-        assert!(db.todos(7).await.expect("load").is_empty());
     }
 
     #[test]

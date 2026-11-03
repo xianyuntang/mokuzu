@@ -36,7 +36,6 @@ use crate::search::WebSearch;
 use crate::settings;
 use crate::skill;
 use crate::swarm;
-use crate::todo;
 use crate::webhook;
 
 /// Cuts a conversation's running turn short, e.g. on the user's `/stop`.
@@ -344,17 +343,14 @@ async fn system_prompt(db: &Db, config: &Config, user: u64) -> Result<String> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let memories = db.memories(user).await.context("failed to load memory")?;
     let skills = db.skills(user).await.context("failed to load skills")?;
-    let todos = db.todos(user).await.context("failed to load todos")?;
     let tools = if config.search.is_some() {
         format!("{}\n\n{}\n\n", search::GUIDANCE, swarm::GUIDANCE)
     } else {
         String::new()
     };
     Ok(format!(
-        "{IDENTITY}\n\n{tools}{guidance}\n\n{todo_guidance}\n\n{skills}\n\nOS: {os}. Working directory: {cwd}. Workspace: {workspace}.\n\n{hint}\n\n{saved}\n\n{todos}",
+        "{IDENTITY}\n\n{tools}{guidance}\n\n{skills}\n\nOS: {os}. Working directory: {cwd}. Workspace: {workspace}.\n\n{hint}\n\n{saved}",
         guidance = memory::GUIDANCE,
-        todo_guidance = todo::GUIDANCE,
-        todos = todo::snapshot(&todos),
         skills = skill::section(&skills),
         hint = PLATFORM_HINT,
         saved = memory::snapshot(&memories),
@@ -364,8 +360,7 @@ async fn system_prompt(db: &Db, config: &Config, user: u64) -> Result<String> {
     ))
 }
 
-/// Formatting guidance for Discord, where every conversation lives, scheduled jobs and heartbeats
-/// included.
+/// Formatting guidance for Discord, where every conversation lives, scheduled jobs included.
 const PLATFORM_HINT: &str = "You are chatting over Discord. Markdown renders; tables do not, use bullets. Keep replies short. \
          To show an image, put its direct URL on its own line, outside code blocks and <>, and Discord \
          displays it; send_file attaches a local file or an image whose link won't display.\n\
@@ -449,7 +444,6 @@ pub(crate) fn request(
             document::view_tool(),
             memory::tool(),
             memory::history_tool(),
-            todo::tool(),
             skill::tool(),
             fetch::tool(),
             settings::tool(),
@@ -501,8 +495,8 @@ pub struct Agent {
     key: String,
     /// Discord user ID of who sent the current turn; picks the memory. Set by `run_turn`.
     user: u64,
-    /// Conversation key new todos are posted about in: `key`, unless this conversation posts
-    /// somewhere else (a job or heartbeat run).
+    /// Conversation key this conversation's output goes to, where jobs made in it post: `key`,
+    /// unless it posts somewhere else (a job or webhook run).
     posts_to: String,
     /// Rebuilt by `run_turn` for its sender.
     system: String,
@@ -559,7 +553,7 @@ impl Agent {
         self.reviewer = None;
     }
 
-    /// Sets where this conversation's output goes, so todos written in it are followed up there.
+    /// Sets where this conversation's output goes, so jobs made in it post there too.
     pub fn posts_to(&mut self, target: &str) {
         target.clone_into(&mut self.posts_to);
     }
@@ -578,25 +572,6 @@ impl Agent {
             "saved; memory uses {used}/{} characters. Every conversation with this person sees it from its next message.",
             memory::CHAR_LIMIT
         ))
-    }
-
-    /// Validates and applies one todo tool call; problems go back to the model as text.
-    async fn todo(&self, args: &Value, io: &mut impl Io) -> Result<String> {
-        let todos = self.db.todos(self.user).await?;
-        let edit = match todo::plan(&todos, args) {
-            Ok(edit) => edit,
-            Err(problem) => return Ok(format!("error: {problem}")),
-        };
-        let note = todo::describe(&edit, &todos);
-        self.db
-            .save_todo(self.user, self.posts_to.clone(), edit)
-            .await?;
-        io.note(&note).await?;
-        // Models tend to end a heartbeat silently after the last edit, so remind them here.
-        if self.key.starts_with("heartbeat:") {
-            return Ok(todo::HEARTBEAT_SAVED.to_owned());
-        }
-        Ok("saved".to_owned())
     }
 
     async fn search_history(&self, args: &Value, io: &mut impl Io) -> Result<String> {
@@ -741,7 +716,10 @@ impl Agent {
                 let when = cron::when(job.schedule.as_deref(), job.next_run, zone);
                 let name = job.name.clone();
                 let prompt = quote(&job.prompt);
-                let id = self.db.add_job(self.key.clone(), self.user, job).await?;
+                let id = self
+                    .db
+                    .add_job(self.posts_to.clone(), self.user, job)
+                    .await?;
                 let note = format!("⏰ scheduled #{id} {name} ({when})\n{prompt}");
                 // A full message, not a note: notes show one line, and the user should see the
                 // instructions the job will run with.
@@ -1189,7 +1167,6 @@ impl Agent {
                         output
                     }
                     "memory" => self.remember(&call.function.arguments, io).await?,
-                    "todo" => self.todo(&call.function.arguments, io).await?,
                     "search_history" => self.search_history(&call.function.arguments, io).await?,
                     "skill" => self.skill(&call.function.arguments, io).await?,
                     "cron" if self.schedules() => self.cron(&call.function.arguments, io).await?,
