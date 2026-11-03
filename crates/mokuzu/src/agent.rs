@@ -9,7 +9,7 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use rig_core::client::CompletionClient;
 use rig_core::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse, FinishReason,
-    ToolDefinition,
+    ToolDefinition, Usage,
 };
 use rig_core::message::{
     AssistantContent, Image, Message, ToolCall, ToolResultContent, UserContent,
@@ -192,7 +192,19 @@ impl Model {
     ) -> Result<CompletionResponse, CompletionError> {
         match self {
             Self::OAuth(model) => model.complete(request).await,
-            Self::Anthropic(model) => model.completion(request).await,
+            Self::Anthropic(model) => match model.completion(request).await {
+                // Some Anthropic-format providers (MiniMax on OpenCode Go) send `"content": null`
+                // for an empty reply, which rig rejects; it means the same as an empty list.
+                Err(err) if null_content(&err) => {
+                    tracing::debug!("empty Anthropic-format reply sent as null content");
+                    Ok(CompletionResponse::new(
+                        Vec::new(),
+                        Usage::new(),
+                        "anthropic",
+                    ))
+                }
+                result => result,
+            },
             Self::Openai(model) => model.completion(request).await,
             Self::Responses(model) => {
                 // Turns answered by another model keep that provider's message id, which the
@@ -224,6 +236,12 @@ impl Model {
             }
         }
     }
+}
+
+/// Whether `err` is rig failing to parse an Anthropic-format reply whose `content` is `null`.
+fn null_content(err: &CompletionError) -> bool {
+    matches!(err, CompletionError::JsonError(err)
+        if err.to_string().starts_with("invalid type: null, expected a sequence"))
 }
 
 /// OpenCode Go serves Gemini under `/inference/go/google` instead of next to the other formats, so
@@ -1488,6 +1506,18 @@ mod tests {
             .await
             .expect("second turn");
         assert!(io.0.join("\n").to_ascii_lowercase().contains("nacilep"));
+    }
+
+    #[test]
+    fn null_content_is_recognized() {
+        let reply = r#"{"content":null,"id":"msg_1","model":"minimax-m3","role":"assistant",
+            "stop_reason":"end_turn","stop_sequence":null,
+            "usage":{"input_tokens":1,"output_tokens":0}}"#;
+        let err = serde_json::from_str::<anthropic::completion::CompletionResponse>(reply)
+            .expect_err("rig rejects null content");
+        assert!(null_content(&CompletionError::JsonError(err)));
+        let other = serde_json::from_str::<Value>("{").expect_err("invalid JSON");
+        assert!(!null_content(&CompletionError::JsonError(other)));
     }
 
     #[test]
