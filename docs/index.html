@@ -23,567 +23,307 @@
     <meta name="twitter:description" content="Open-source, self-hosted AI agent and Discord bot in Rust." />
     <meta name="twitter:image" content="https://xianyuntang.github.io/mokuzu/icon.png" />
     <link rel="icon" href="icon.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;600;800&display=swap" rel="stylesheet" />
+    <script>document.documentElement.classList.add('js')</script>
     <style>
       :root {
-        color-scheme: dark;
-        --bg: #0f172a;
-        --panel: #111c31;
-        --panel-strong: #17233b;
-        --text: #f1f5f9;
-        --muted: #94a3b8;
-        --border: #334155;
-        --primary: #f97316;
-        --primary-strong: #ea580c;
-        --accent: #fbbf24;
-        --success: #22c55e;
-        --shadow: 0 24px 80px rgba(2, 8, 23, 0.5);
+        --bg: #ffffff;
+        --surface: #f3f3f3;
+        --ink: #232323;
+        --muted: #6e6e6e;
+        --accent: #a1ffcb;
+        --accent-ink: #232323;
+        --dark: #232323;
+        --dark-ink: #ffffff;
+        --step-small: clamp(0.8125rem, 0.79rem + 0.1vw, 0.875rem);
+        --step-body: clamp(1.0625rem, 1rem + 0.25vw, 1.1875rem);
+        --step-lead: clamp(1.25rem, 1.1rem + 0.7vw, 1.625rem);
+        --step-head: clamp(2rem, 1.3rem + 3.2vw, 4rem);
+        --step-big: clamp(2.25rem, 1rem + 4.6vw, 4.75rem);
+        --m: 32px;
+        --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+        --radius: 6px;
+        /* Discord's own interface colours, used only inside data-ui fragments */
+        --dc-bg: #313338;
+        --dc-side: #2b2d31;
+        --dc-text: #dbdee1;
+        --dc-soft: #949ba4;
+        --dc-blurple: #5865f2;
+        --dc-green: #248046;
       }
+      @media (max-width: 720px) { :root { --m: 16px; } }
 
-      * {
-        box-sizing: border-box;
-      }
-
-      html {
-        scroll-behavior: smooth;
-      }
-
+      *, *::before, *::after { box-sizing: border-box; }
+      html { -webkit-text-size-adjust: 100%; }
       body {
         margin: 0;
-        font-family:
-          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-          "Segoe UI", sans-serif;
-        background:
-          radial-gradient(circle at top left, rgba(249, 115, 22, 0.26), transparent 34rem),
-          radial-gradient(circle at top right, rgba(251, 191, 36, 0.14), transparent 30rem),
-          var(--bg);
-        color: var(--text);
-        line-height: 1.6;
-        overflow-x: hidden;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "Schibsted Grotesk", system-ui, sans-serif;
+        font-size: var(--step-body);
+        line-height: 1.45;
+        letter-spacing: -0.01em;
       }
-
-      a {
-        color: inherit;
-        text-decoration: none;
-      }
-
-      a:focus-visible,
-      button:focus-visible {
-        outline: 3px solid rgba(251, 191, 36, 0.8);
-        outline-offset: 4px;
-      }
-
-      .container {
-        width: min(1120px, calc(100% - 32px));
-        margin: 0 auto;
-      }
-
-      .nav {
-        position: sticky;
-        top: 0;
-        z-index: 10;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-        background: rgba(15, 23, 42, 0.82);
-        backdrop-filter: blur(18px);
-      }
-
-      .nav-inner {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        min-height: 72px;
-        gap: 20px;
-      }
-
-      .brand {
-        display: inline-flex;
-        align-items: center;
-        gap: 12px;
-        font-weight: 800;
-        letter-spacing: -0.03em;
-      }
-
-      .brand-mark {
-        display: grid;
-        place-items: center;
-        width: 38px;
-        height: 38px;
-        border: 1px solid rgba(96, 165, 250, 0.4);
-        border-radius: 12px;
-        background: linear-gradient(135deg, #ea580c, #fbbf24);
-        box-shadow: 0 10px 30px rgba(234, 88, 12, 0.35);
-      }
-
-      .nav-links {
-        display: flex;
-        align-items: center;
-        gap: 22px;
-        color: var(--muted);
-        font-size: 0.95rem;
-      }
-
-      .nav-links a:hover {
-        color: var(--text);
-      }
+      img { display: block; max-width: 100%; height: auto; }
+      a { color: inherit; }
+      :focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+      h1, h2, p, figure { margin: 0; }
+      h1, h2 { font-weight: 800; letter-spacing: -0.05em; line-height: 0.95; }
+      h2 { font-size: var(--step-head); }
+      .wrap { padding-inline: var(--m); }
+      .grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); column-gap: 24px; }
+      section { margin-top: 200px; }
+      @media (max-width: 720px) { section { margin-top: 120px; } .grid { column-gap: 12px; } }
 
       .button {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        min-height: 44px;
-        padding: 0 18px;
-        border: 1px solid transparent;
-        border-radius: 999px;
-        font-weight: 700;
-        transition:
-          background 180ms ease,
-          border-color 180ms ease,
-          color 180ms ease;
+        display: inline-flex; align-items: center; justify-content: center;
+        min-height: 48px; padding: 0 22px; border: 0; border-radius: 999px;
+        background: var(--accent); color: var(--accent-ink);
+        font-family: inherit; font-weight: 600; font-size: var(--step-body); line-height: 1;
+        text-decoration: none; cursor: pointer;
+        transition: transform 150ms var(--ease-out), background-color 150ms;
       }
+      .button:hover { background: #7dfbb5; transform: translateY(-2px); }
+      .button:active { transform: translateY(0) scale(0.98); }
+      .button.dark { background: var(--ink); color: var(--bg); }
+      .button.dark:hover { background: #000; }
 
-      .button-primary {
-        background: var(--primary-strong);
-        color: white;
-        box-shadow: 0 16px 34px rgba(234, 88, 12, 0.32);
+      /* Navigation */
+      .nav { display: flex; align-items: center; justify-content: space-between; height: 84px; padding-inline: var(--m); }
+      .wordmark { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 20px; letter-spacing: -0.04em; text-decoration: none; }
+      .wordmark img { width: 32px; height: 32px; border-radius: 8px; }
+      .nav-links { display: flex; align-items: center; gap: 28px; font-weight: 600; font-size: 15px; }
+      .nav-links a:not(.button) { text-decoration: none; }
+      .nav-links a:not(.button):hover { text-decoration: underline; text-underline-offset: 4px; }
+      .nav .button { min-height: 44px; font-size: 15px; }
+      @media (max-width: 720px) { .nav-links .hide-phone { display: none; } .nav-links { gap: 16px; } }
+
+      /* Hero: a sentence split by a frame */
+      .hero { margin-top: 0; min-height: calc(100svh - 84px); display: grid; grid-template-rows: 1fr auto; padding: 0 var(--m) 32px; }
+      .stage { align-self: center; display: grid; grid-template-columns: 1fr minmax(0, 40vw) 1fr; align-items: center; column-gap: 32px; }
+      .stage h1 { grid-column: 1 / -1; grid-row: 1; display: grid; grid-template-columns: subgrid; align-items: center; }
+      .stage .line { display: block; overflow: hidden; padding-bottom: 0.08em; margin-bottom: -0.08em; font-size: clamp(2.5rem, 1rem + 3.6vw, 4.25rem); }
+      .stage .line > span { display: block; }
+      .stage .left { grid-column: 1; grid-row: 1; }
+      .stage .right { grid-column: 3; grid-row: 1; text-align: right; }
+      .frame { grid-column: 2; grid-row: 1; position: relative; z-index: 1; min-width: 0; }
+      .hero-foot { display: flex; justify-content: space-between; align-items: end; gap: 32px; margin-top: 40px; }
+      .hero-foot p { max-width: 34ch; font-size: var(--step-lead); line-height: 1.3; }
+      @media (prefers-reduced-motion: no-preference) {
+        .js .stage .line > span { transform: translateY(105%); animation: line-up 900ms var(--ease-out) forwards; animation-delay: calc(var(--i) * 110ms + 150ms); }
+        .js .hero-foot, .js .frame { opacity: 0; animation: fade-up 700ms var(--ease-out) 650ms forwards; }
       }
-
-      .button-primary:hover {
-        background: var(--primary);
-      }
-
-      .button-secondary {
-        border-color: rgba(148, 163, 184, 0.28);
-        background: rgba(15, 23, 42, 0.7);
-        color: var(--text);
-      }
-
-      .button-secondary:hover {
-        border-color: rgba(148, 163, 184, 0.55);
-      }
-
-      .hero {
-        padding: 86px 0 72px;
-      }
-
-      .hero-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(360px, 0.86fr);
-        align-items: center;
-        gap: 48px;
-      }
-
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 7px 12px;
-        border: 1px solid rgba(251, 191, 36, 0.3);
-        border-radius: 999px;
-        background: rgba(251, 191, 36, 0.08);
-        color: #bae6fd;
-        font-size: 0.9rem;
-        font-weight: 700;
-      }
-
-      .eyebrow-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: var(--success);
-        box-shadow: 0 0 18px rgba(34, 197, 94, 0.8);
-      }
-
-      h1,
-      h2,
-      h3 {
-        margin: 0;
-        line-height: 1.05;
-        letter-spacing: -0.05em;
-      }
-
-      h1 {
-        max-width: 760px;
-        margin-top: 22px;
-        font-size: clamp(3rem, 8vw, 5.7rem);
-      }
-
-      .gradient-text {
-        background: linear-gradient(135deg, #f8fafc, #93c5fd 58%, #67e8f9);
-        -webkit-background-clip: text;
-        background-clip: text;
-        color: transparent;
-      }
-
-      .hero-copy {
-        max-width: 660px;
-        margin: 24px 0 0;
-        color: var(--muted);
-        font-size: 1.2rem;
-      }
-
-      .hero-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 14px;
-        margin-top: 34px;
-      }
-
-      .hero-proof {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 18px;
-        margin-top: 28px;
-        color: #cbd5e1;
-        font-size: 0.94rem;
-      }
-
-      .proof-item {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-      }
-
-      .check {
-        color: var(--success);
-        font-weight: 900;
-      }
-
-      .terminal-card {
-        overflow: hidden;
-        border: 1px solid rgba(148, 163, 184, 0.22);
-        border-radius: 26px;
-        background: linear-gradient(180deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
-        box-shadow: var(--shadow);
-      }
-
-      .terminal-bar {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        height: 46px;
-        padding: 0 18px;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-        background: rgba(15, 23, 42, 0.9);
-      }
-
-      .dot {
-        width: 12px;
-        height: 12px;
-        border-radius: 999px;
-      }
-
-      .dot-red {
-        background: #fb7185;
-      }
-
-      .dot-yellow {
-        background: #facc15;
-      }
-
-      .dot-green {
-        background: #22c55e;
-      }
-
-      .terminal-title {
-        margin-left: auto;
-        color: #94a3b8;
-        font-size: 0.85rem;
-      }
-
-      .terminal-body {
-        padding: 22px;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 0.92rem;
-        color: #dbeafe;
-      }
-
-      .prompt {
-        color: #fbbf24;
-      }
-
-      .muted-line {
-        color: #94a3b8;
-      }
-
-      .green-line {
-        color: #86efac;
-      }
-
-      .terminal-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-        margin-top: 20px;
-      }
-
-      .mini-panel {
-        min-height: 112px;
-        padding: 14px;
-        border: 1px solid rgba(148, 163, 184, 0.16);
-        border-radius: 16px;
-        background: rgba(15, 23, 42, 0.65);
-      }
-
-      .mini-panel strong {
-        display: block;
-        margin-bottom: 8px;
-        color: #f8fafc;
-        font-family: inherit;
-      }
-
-      .section {
-        padding: 72px 0;
-      }
-
-      .section-header {
-        max-width: 760px;
-        margin-bottom: 34px;
-      }
-
-      .section-kicker {
-        margin-bottom: 12px;
-        color: var(--accent);
-        font-weight: 800;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        font-size: 0.78rem;
-      }
-
-      h2 {
-        font-size: clamp(2rem, 4.8vw, 3.3rem);
-      }
-
-      .section-copy {
-        max-width: 680px;
-        margin: 16px 0 0;
-        color: var(--muted);
-        font-size: 1.08rem;
-      }
-
-      .feature-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 16px;
-      }
-
-      .feature-card,
-      .faq-card,
-      .compare-card {
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 22px;
-        background: rgba(17, 28, 49, 0.72);
-        box-shadow: 0 18px 50px rgba(2, 8, 23, 0.18);
-      }
-
-      .feature-card {
-        padding: 22px;
-      }
-
-      .icon {
-        display: grid;
-        place-items: center;
-        width: 42px;
-        height: 42px;
-        margin-bottom: 18px;
-        border-radius: 14px;
-        background: rgba(249, 115, 22, 0.16);
-        color: #93c5fd;
-      }
-
-      .feature-card h3,
-      .faq-card h3,
-      .compare-card h3 {
-        font-size: 1.15rem;
-        letter-spacing: -0.02em;
-      }
-
-      .feature-card p,
-      .faq-card p,
-      .compare-card p {
-        margin: 12px 0 0;
-        color: var(--muted);
-      }
-
-      .showcase {
-        display: grid;
-        grid-template-columns: 0.9fr 1.1fr;
-        gap: 18px;
-      }
-
-      .mock-window {
-        overflow: hidden;
-        min-height: 320px;
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 24px;
-        background: rgba(15, 23, 42, 0.9);
-        box-shadow: var(--shadow);
-      }
-
-      .mock-window.large {
-        grid-row: span 2;
-      }
-
-      .mock-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 14px 16px;
-        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
-        color: #cbd5e1;
-        font-size: 0.9rem;
-      }
-
-      .mock-body {
-        padding: 18px;
-      }
-
-      .connection-list {
-        display: grid;
-        gap: 12px;
-      }
-
-      .connection-row,
-      .file-row,
-      .forward-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        padding: 12px;
-        border: 1px solid rgba(148, 163, 184, 0.13);
-        border-radius: 14px;
-        background: rgba(30, 41, 59, 0.72);
-        color: #dbeafe;
-      }
-
-      .badge {
-        display: inline-flex;
-        align-items: center;
-        min-height: 26px;
-        padding: 0 9px;
-        border-radius: 999px;
-        background: rgba(34, 197, 94, 0.12);
-        color: #86efac;
-        font-size: 0.78rem;
-        font-weight: 700;
-      }
-
-      .code-block {
-        margin: 16px 0 0;
-        padding: 18px;
-        border-radius: 16px;
-        background: #020617;
-        color: #bae6fd;
-        font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-        font-size: 0.88rem;
-      }
-
-      .compare-grid,
-      .faq-grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 16px;
-      }
-
-      .compare-card,
-      .faq-card {
-        padding: 22px;
-      }
-
-      .cta-panel {
-        display: grid;
-        grid-template-columns: 1fr auto;
-        align-items: center;
-        gap: 24px;
-        padding: 34px;
-        border: 1px solid rgba(96, 165, 250, 0.32);
-        border-radius: 30px;
-        background:
-          radial-gradient(circle at top left, rgba(249, 115, 22, 0.26), transparent 28rem),
-          rgba(17, 28, 49, 0.9);
-        box-shadow: var(--shadow);
-      }
-
-      .footer {
-        padding: 34px 0;
-        border-top: 1px solid rgba(148, 163, 184, 0.16);
-        color: var(--muted);
-      }
-
-      .footer-inner {
-        display: flex;
-        justify-content: space-between;
-        gap: 20px;
-      }
-
-      .footer a {
-        color: #cbd5e1;
-      }
-
+      @keyframes line-up { to { transform: none; } }
+      @keyframes fade-up { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
       @media (max-width: 900px) {
-        .hero-grid,
-        .showcase,
-        .cta-panel {
-          grid-template-columns: 1fr;
-        }
-
-        .feature-grid,
-        .compare-grid,
-        .faq-grid {
-          grid-template-columns: repeat(2, 1fr);
-        }
-
-        .nav-links a:not(.button) {
-          display: none;
-        }
+        .hero { min-height: auto; padding-top: 24px; }
+        .stage { grid-template-columns: 1fr; row-gap: 24px; }
+        .stage .line { font-size: 10.5vw; }
+        .stage h1 { grid-template-columns: 1fr; grid-template-rows: subgrid; row-gap: 24px; grid-row: 1 / 4; }
+        .stage .left { grid-row: 1; grid-column: 1; }
+        .frame { grid-row: 2; grid-column: 1; }
+        .stage .right { grid-row: 3; grid-column: 1; }
+        .stage { grid-template-rows: auto auto auto; }
+        .hero-foot { flex-direction: column; align-items: start; }
       }
 
-      @media (max-width: 620px) {
-        .container {
-          width: min(100% - 24px, 1120px);
-        }
+      /* Discord fragments */
+      [data-ui] { letter-spacing: 0; }
+      .dc { background: var(--dc-bg); color: var(--dc-text); border-radius: 8px; padding: 18px 18px 20px; font-size: 15px; line-height: 1.4; }
+      .dc-head { color: var(--dc-soft); font-weight: 600; font-size: 14px; padding-bottom: 12px; }
+      .msg { display: grid; grid-template-columns: 40px minmax(0, 1fr); column-gap: 14px; margin-top: 14px; }
+      .avatar { width: 40px; height: 40px; border-radius: 50%; background: #f0b232; color: #232323; display: grid; place-items: center; font-weight: 800; }
+      .avatar.bot { background: none; }
+      .avatar.bot img { width: 100%; height: 100%; border-radius: 50%; }
+      .who { font-weight: 600; color: #f2f3f5; }
+      .who .tag { background: var(--dc-blurple); color: #fff; font-size: 11px; font-weight: 600; padding: 1px 5px; border-radius: 4px; margin-left: 6px; vertical-align: 2px; }
+      .who time { color: var(--dc-soft); font-size: 12px; font-weight: 400; margin-left: 6px; }
+      .block { margin: 8px 0 0; background: #2b2d31; border: 1px solid #1e1f22; border-radius: 4px; padding: 8px 10px; font-family: Consolas, "Andale Mono", monospace; /* taste-skill-ignore: a real Discord code block */ font-size: 13px; line-height: 1.35; color: var(--dc-text); white-space: pre; overflow-x: auto; }
+      .status { margin-top: 4px; }
+      .status:empty { display: none; }
+      .reply { margin-top: 10px; }
+      .ask { margin-top: 10px; background: var(--dc-side); border-left: 4px solid #f0b232; border-radius: 4px; padding: 12px 14px; }
+      .ask code { font-family: inherit; background: #1e1f22; padding: 1px 6px; border-radius: 4px; }
+      .ask-buttons { display: flex; gap: 8px; margin-top: 8px; }
+      .dc-btn { display: inline-block; border: 0; border-radius: 3px; padding: 7px 16px; font-family: inherit; font-weight: 600; font-size: 14px; line-height: 1.2; color: #fff; cursor: pointer; transition: filter 150ms, transform 150ms; }
+      .dc-btn:hover { filter: brightness(1.12); }
+      .dc-btn:active { transform: scale(0.97); }
+      .dc-btn.ok { background: var(--dc-green); }
+      .dc-btn.no { background: #da373c; }
+      .dc-btn:disabled { opacity: 0.5; cursor: default; }
+      .result { margin-top: 10px; color: #57f287; font-weight: 600; }
+      .result.cancel { color: var(--dc-soft); }
+      .again { margin-top: 10px; background: none; border: 0; color: var(--dc-soft); font: inherit; font-size: 13px; text-decoration: underline; cursor: pointer; padding: 0; }
 
-        .hero {
-          padding-top: 54px;
-        }
+      /* Features: the command menu */
+      .commands h2 { margin-bottom: 28px; }
+      .cmd-input {
+        width: 100%; height: 1.9em; padding: 0 0.5em; border: 0; border-radius: var(--radius);
+        background: var(--surface); color: var(--ink); font-family: inherit; font-weight: 600;
+        font-size: clamp(1.75rem, 1rem + 2vw, 2.75rem); letter-spacing: -0.03em;
+      }
+      .cmd-input::placeholder { color: var(--muted); }
+      .cmd-list { list-style: none; margin: 16px 0 0; padding: 0; }
+      .cmd-row {
+        display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--ink); cursor: pointer;
+        padding: 6px 0.4em; border-radius: var(--radius); font-family: inherit;
+        transition: background-color 150ms;
+      }
+      .cmd-name { display: block; font-weight: 800; font-size: var(--step-big); letter-spacing: -0.05em; line-height: 1.1; }
+      .cmd-desc { display: none; font-size: var(--step-body); font-weight: 400; letter-spacing: -0.01em; padding: 4px 0 8px; max-width: 60ch; }
+      .cmd-row[aria-selected="true"] { background: var(--accent); }
+      .cmd-row[aria-selected="true"] .cmd-desc { display: block; }
+      .cmd-row:not([aria-selected="true"]):hover { background: var(--surface); }
+      .cmd-empty { padding: 16px 0.4em; color: var(--muted); }
 
-        .nav-inner {
-          min-height: 64px;
-        }
-
-        .brand span:last-child {
-          display: none;
-        }
-
-        .hero-actions,
-        .hero-actions .button,
-        .cta-panel .button {
-          width: 100%;
-        }
-
-        .feature-grid,
-        .compare-grid,
-        .faq-grid,
-        .terminal-grid {
-          grid-template-columns: 1fr;
-        }
-
-        .terminal-card,
-        .mock-window {
-          border-radius: 18px;
-        }
-
-        .footer-inner {
-          flex-direction: column;
-        }
+      /* How it works: one card, four fields */
+      .fields { display: grid; grid-template-columns: repeat(4, 1fr); }
+      .field { display: flex; flex-direction: column; justify-content: space-between; gap: 32px; padding: 28px; min-height: 84svh; }
+      .field:nth-child(1) { background: var(--surface); }
+      .field:nth-child(2) { background: var(--accent); }
+      .field:nth-child(3) { background: var(--dark); color: var(--dark-ink); }
+      .field:nth-child(4) { background: #d9d9d9; }
+      .field h2 { font-size: clamp(1.5rem, 1rem + 1.2vw, 2rem); }
+      .field .card { margin: 0 auto; width: min(100%, 280px); transition: transform 150ms var(--ease-out); }
+      .field:hover .card { transform: translateY(-6px); }
+      .field .clause { font-size: clamp(1.375rem, 1rem + 1vw, 2rem); font-weight: 600; letter-spacing: -0.03em; line-height: 1.1; }
+      .card .dc { padding: 14px; font-size: 14px; }
+      .field, .card { min-width: 0; }
+      .card .block { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .card .msg { grid-template-columns: 32px 1fr; column-gap: 10px; margin-top: 0; }
+      .card .avatar { width: 32px; height: 32px; font-size: 14px; }
+      .file { margin-top: 10px; background: var(--dc-side); border-radius: 4px; padding: 8px 10px; }
+      .file b { color: #00a8fc; font-weight: 600; }
+      .file small { color: var(--dc-soft); display: block; font-size: 13px; }
+      .chart { margin-top: 10px; background: #fff; border-radius: 4px; padding: 10px; color: #232323; }
+      .chart svg { display: block; width: 100%; height: auto; }
+      .chart small { display: block; font-size: 13px; color: #444; margin-bottom: 4px; }
+      @media (max-width: 900px) {
+        .fields { grid-template-columns: 1fr; }
+        .field { min-height: 0; padding: 32px 20px 48px; justify-content: start; }
+        .field .card { margin: 0; width: 100%; max-width: 560px; }
+        .field .clause { order: -1; }
+        .field h2 { order: -2; }
       }
 
-      @media (prefers-reduced-motion: reduce) {
-        *,
-        *::before,
-        *::after {
-          scroll-behavior: auto !important;
-          transition: none !important;
+      /* Showcase: one row, three states */
+      .showcase h2 { grid-column: 4 / 10; margin-bottom: 64px; }
+      .state-word { grid-column: 1 / 4; text-align: right; align-self: center; font-size: var(--step-lead); color: var(--muted); }
+      .row { grid-column: 4 / 10; margin-bottom: 56px; }
+      .side-photo { grid-column: 10 / 13; grid-row: 2 / 5; align-self: start; }
+      .side-photo img { width: 100%; aspect-ratio: 3 / 4; object-fit: cover; }
+      .side-photo figcaption { font-size: var(--step-small); color: var(--muted); margin-top: 10px; }
+      .row.quiet p { font-size: var(--step-lead); line-height: 1.3; max-width: 34ch; }
+      .todo { display: flex; align-items: center; gap: 14px; background: var(--dc-bg); color: var(--dc-text); border-radius: 8px; padding: 16px 18px; font-size: 15px; min-height: 76px; }
+      .box { flex: none; width: 22px; height: 22px; border-radius: 4px; border: 2px solid var(--dc-soft); display: grid; place-items: center; }
+      .todo.done .box { background: var(--dc-green); border-color: var(--dc-green); }
+      .todo.done .box::after { content: ""; width: 6px; height: 11px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-1px, -1px); }
+      .todo .text { flex: 1; min-width: 0; }
+      .todo .title { color: #f2f3f5; font-weight: 600; }
+      .todo.done .title { text-decoration: line-through; color: var(--dc-soft); }
+      .todo small { display: block; color: var(--dc-soft); font-size: 13px; }
+      .todo.done small { color: #57f287; }
+      .todo.hover { outline: 2px solid var(--dc-blurple); }
+      @media (max-width: 900px) {
+        .showcase .grid { display: block; }
+        .showcase h2 { margin-bottom: 32px; }
+        .row { margin-bottom: 8px; overflow: hidden; }
+        .state-word { text-align: left; font-size: var(--step-body); margin: 10px 0 40px; }
+        .todo { min-width: 520px; }
+        .side-photo { margin-top: 24px; }
+      }
+
+      /* The name */
+      .name { align-items: center; }
+      .name figure { grid-column: 1 / 8; overflow: clip; }
+      .name figure img { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; }
+      .name .copy { grid-column: 9 / 13; }
+      .name .copy h2, .pi .copy h2 { margin-bottom: 28px; }
+      .name .copy p + p { margin-top: 16px; }
+      figcaption { font-size: var(--step-small); color: var(--muted); margin-top: 10px; }
+      @supports (animation-timeline: view()) {
+        @media (prefers-reduced-motion: no-preference) {
+          .name figure img { animation: drift linear both; animation-timeline: view(); animation-range: entry 0% exit 100%; }
         }
+      }
+      @keyframes drift { from { transform: scale(1.14) translateY(-3%); } to { transform: scale(1.02) translateY(3%); } }
+
+      /* Raspberry Pi band */
+      .pi { background: var(--surface); padding-block: 96px; }
+      .pi .copy { grid-column: 1 / 6; align-self: center; }
+      .pi figure { grid-column: 6 / 13; }
+      .specs { list-style: none; padding: 0; margin: 28px 0 0; }
+      .specs li { padding: 10px 0; font-weight: 600; }
+      .specs li span { display: block; font-weight: 400; color: var(--muted); font-size: var(--step-small); }
+      @media (max-width: 900px) {
+        .name figure, .name .copy, .pi .copy, .pi figure { grid-column: 1 / -1; }
+        .name .copy, .pi figure { margin-top: 32px; }
+      }
+
+      /* FAQ: question index, one answer */
+      .faq .list { grid-column: 1 / 6; }
+      .faq h2 { margin-bottom: 40px; }
+      .q { display: flex; gap: 14px; align-items: baseline; width: 100%; text-align: left; border: 0; background: none; padding: 9px 0; cursor: pointer; font-family: inherit; font-weight: 600; font-size: var(--step-lead); line-height: 1.25; color: var(--muted); letter-spacing: -0.02em; transition: color 150ms; }
+      .q::before { content: ""; flex: none; width: 10px; height: 10px; border-radius: 50%; background: currentColor; transform: translateY(-2px); }
+      .q[aria-selected="true"] { color: var(--ink); }
+      .q[aria-selected="true"]::before { background: #19c46b; }
+      .q:hover { color: var(--ink); }
+      .answers { grid-column: 7 / 13; position: sticky; top: 120px; align-self: start; padding-top: 112px; }
+      .answer { font-size: clamp(1.375rem, 1rem + 0.9vw, 1.75rem); line-height: 1.3; max-width: 32ch; }
+      @media (prefers-reduced-motion: no-preference) { .answer { animation: fade 150ms ease-out; } }
+      @keyframes fade { from { opacity: 0; } }
+      .faq .inline-answer { display: none; }
+      @media (max-width: 900px) {
+        .faq .list { grid-column: 1 / -1; }
+        .answers { display: none; }
+        .faq .inline-answer:not([hidden]) { display: block; padding: 4px 0 12px 24px; font-size: 19px; }
+      }
+
+      /* Closing: the install lines */
+      .install h2 { font-size: clamp(2.5rem, 1rem + 5vw, 5.5rem); }
+      .install .lede { margin-top: 32px; max-width: 46ch; font-size: var(--step-lead); line-height: 1.3; }
+      .cmdline { margin-top: 40px; display: flex; gap: 12px; align-items: stretch; flex-wrap: wrap; }
+      .cmdline pre { flex: 1 1 40ch; min-width: 0; margin: 0; background: var(--dark); color: var(--accent); padding: 18px 20px; border-radius: var(--radius); overflow-x: auto; font-size: 15px; line-height: 1.5; }
+      .cmdline .button { min-height: auto; padding-block: 14px; }
+
+      /* Footer: a board of tiles */
+      footer { margin-top: 200px; padding: 0 10px 10px; display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 8px; }
+      .tile { background: var(--surface); padding: 24px; min-height: 220px; display: flex; flex-direction: column; justify-content: space-between; gap: 20px; }
+      .t-state { grid-column: 1 / 5; }
+      .t-state p:first-child { font-size: 24px; line-height: 1.25; letter-spacing: -0.02em; max-width: 24ch; }
+      .t-nav { grid-column: 5 / 8; }
+      .t-nav ul { list-style: none; margin: 0; padding: 0; }
+      .t-nav li + li { margin-top: 6px; }
+      .t-nav a, .t-mail a { text-decoration: none; font-weight: 600; }
+      .t-nav a:hover, .t-mail a:hover { text-decoration: underline; text-underline-offset: 4px; }
+      .t-credit { grid-column: 8 / 10; font-size: var(--step-small); color: var(--muted); justify-content: end; }
+      .t-credit a { color: var(--ink); }
+      .t-mail { grid-column: 10 / 13; justify-content: end; font-size: 20px; }
+      .t-word { grid-column: 1 / 9; min-height: 320px; background: var(--dark); color: var(--dark-ink); justify-content: center; align-items: center; overflow: hidden; }
+      .t-word span { font-weight: 800; font-size: 12vw; letter-spacing: -0.06em; line-height: 0.8; }
+      .t-go { grid-column: 9 / 13; min-height: 320px; background: var(--accent); text-decoration: none; transition: background-color 150ms; }
+      .t-go:hover { background: #7dfbb5; }
+      .t-go span { font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
+      .t-go svg { align-self: end; transition: transform 200ms var(--ease-out); }
+      .t-go:hover svg { transform: translate(6px, -6px); }
+      .small { font-size: var(--step-small); color: var(--muted); }
+      @media (max-width: 900px) {
+        footer { grid-template-columns: 1fr 1fr; gap: 6px; padding: 0 6px 6px; }
+        .tile { padding: 20px; min-height: 160px; }
+        .t-word { grid-column: 1 / -1; order: -2; min-height: 160px; }
+        .t-word span { font-size: 22vw; }
+        .t-go { grid-column: 1 / -1; order: -1; min-height: 160px; }
+        .t-nav, .t-mail { grid-column: span 1; }
+        .t-credit, .t-state { grid-column: 1 / -1; }
+        .t-credit { order: 1; }
+      }
+
+      /* Section entrances */
+      @media (prefers-reduced-motion: no-preference) {
+        .js [data-reveal] { opacity: 0; transform: translateY(24px); transition: opacity 700ms var(--ease-out), transform 700ms var(--ease-out); transition-delay: calc(var(--d, 0) * 80ms); }
+        .js [data-reveal].is-in { opacity: 1; transform: none; }
       }
     </style>
     <script type="application/ld+json">
@@ -603,194 +343,316 @@
     </script>
   </head>
   <body>
-    <nav class="nav" aria-label="Main navigation">
-      <div class="container nav-inner">
-        <a class="brand" href="#top" aria-label="Mokuzu home">
-          <img src="icon.png" alt="" width="34" height="34" style="border-radius: 10px" />
-          <span>Mokuzu</span>
-        </a>
-        <div class="nav-links">
-          <a href="#features">Features</a>
-          <a href="#install">Install</a>
-          <a href="#faq">FAQ</a>
-          <a class="button button-secondary" href="https://github.com/xianyuntang/mokuzu">GitHub</a>
-        </div>
-      </div>
-    </nav>
+    <header class="nav">
+      <a class="wordmark" href="#top"><img src="icon.png" alt="" width="32" height="32" />mokuzu</a>
+      <nav class="nav-links" aria-label="Main">
+        <a class="hide-phone" href="#commands">Features</a>
+        <a class="hide-phone" href="#steps">How it works</a>
+        <a href="#faq">FAQ</a>
+        <a class="button" href="#install">Install</a>
+      </nav>
+    </header>
 
     <main id="top">
-      <section class="hero">
-        <div class="container hero-grid">
-          <div>
-            <div class="eyebrow"><span class="eyebrow-dot"></span>Open source · One Rust binary · Runs on a Raspberry Pi</div>
-            <h1><span class="gradient-text">Self-hosted AI agent</span> for Discord.</h1>
-            <p class="hero-copy">
-              Mokuzu is a personal AI assistant that runs on your own machine and talks with you as a
-              Discord bot, in text and in voice channels. It searches the web, remembers what you tell it,
-              calls MCP tools, runs code in a sandbox, and runs scheduled jobs.
-            </p>
-            <div class="hero-actions">
-              <a class="button button-primary" href="#install">Install</a>
-              <a class="button button-secondary" href="https://github.com/xianyuntang/mokuzu">View source on GitHub</a>
-            </div>
-            <div class="hero-proof" aria-label="Product highlights">
-              <span class="proof-item"><span class="check">✓</span> Text + voice chat</span>
-              <span class="proof-item"><span class="check">✓</span> MCP tools</span>
-              <span class="proof-item"><span class="check">✓</span> Asks before it acts</span>
-            </div>
-          </div>
-
-          <div class="terminal-card" aria-label="Mokuzu Discord conversation preview" role="img">
-            <div class="terminal-bar">
-              <span class="dot dot-red"></span>
-              <span class="dot dot-yellow"></span>
-              <span class="dot dot-green"></span>
-              <span class="terminal-title">#general · mokuzu</span>
-            </div>
-            <div class="terminal-body">
-              <div><span class="prompt">you</span> any open PRs waiting on me?</div>
-              <div class="muted-line">calling github.search_pull_requests…</div>
-              <div class="green-line">2 PRs need your review</div>
-              <br />
-              <div><span class="prompt">you</span> remind me at 5pm</div>
-              <div class="green-line">✓ reminder set for 17:00</div>
-              <div class="terminal-grid">
-                <div class="mini-panel">
-                  <strong>Memory</strong>
-                  <div class="muted-line">per person</div>
-                  <div>prefers Rust</div>
-                  <div class="green-line">saved</div>
+      <section class="hero" aria-label="Introduction">
+        <div class="stage">
+          <h1>
+            <span class="line left"><span style="--i:0">Your own AI agent</span></span>
+            <span class="line right"><span style="--i:1">that asks first.</span></span>
+          </h1>
+          <div class="frame" data-ui>
+            <div class="dc" id="demo" role="group" aria-label="A Discord conversation with mokuzu">
+              <div class="dc-head"># dev · login bug</div>
+              <div class="msg">
+                <span class="avatar" aria-hidden="true">Y</span>
+                <div><div class="who">you <time>17:40</time></div>
+                <div>Close the Linear issue for the login bug once the fix merges.</div></div>
+              </div>
+              <div class="msg">
+                <span class="avatar bot"><img src="icon.png" alt="" width="40" height="40" /></span>
+                <div><div class="who">mokuzu<span class="tag">APP</span> <time>17:41</time></div>
+                <div>PR #212 merged two minutes ago, so I'll mark MOK-48 as Done.</div>
+                <pre class="block"><code>linear → update_issue
+{
+  "id": "MOK-48",
+  "state": "Done"
+}</code></pre>
+                <div class="status" aria-live="polite"></div>
+                <div class="ask-buttons">
+                  <button class="dc-btn ok" type="button" data-act="ok">Run</button>
+                  <button class="dc-btn no" type="button" data-act="no">Deny</button>
                 </div>
-                <div class="mini-panel">
-                  <strong>Sandbox</strong>
-                  <div>python chart.py</div>
-                  <div class="muted-line">no network</div>
-                  <div class="green-line">chart.png</div>
-                </div>
+                <div class="reply" hidden></div>
+                <button class="again" type="button" hidden>Show it again</button></div>
               </div>
             </div>
           </div>
         </div>
+        <div class="hero-foot">
+          <p>A self-hosted assistant that lives in your Discord, in text and in voice. One Rust binary on a Raspberry Pi.</p>
+          <a class="button dark" href="#install">Install on your Pi</a>
+        </div>
       </section>
 
-      <section id="features" class="section">
-        <div class="container">
-          <div class="section-header">
-            <div class="section-kicker">Features</div>
-            <h2>A personal assistant that lives in your Discord.</h2>
-            <p class="section-copy">
-              One binary, one SQLite database, and a background service on Linux or macOS.
-            </p>
+      <section id="commands" class="wrap commands" aria-labelledby="cmd-h">
+        <h2 id="cmd-h" data-reveal><label for="cmd">Find a command</label></h2>
+        <input id="cmd" class="cmd-input" type="search" placeholder="Type to filter…" autocomplete="off" aria-controls="cmd-list" data-reveal style="--d:1" />
+        <ul id="cmd-list" class="cmd-list" role="listbox" aria-label="What mokuzu can do" data-ui data-reveal style="--d:2">
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/voice</span><span class="cmd-desc">Talk with it in a Discord voice channel through OpenAI's Realtime API. Voice messages you send are transcribed.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/cast</span><span class="cmd-desc">Send out up to ten crabs at once to research something broad, then get one answer back.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/browser</span><span class="cmd-desc">Get a link to a live view of the desktop its browser draws on, and watch it work.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remember this</span><span class="cmd-desc">Notes, skills and todos for each person, plus search over past conversations, in any language.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">run the numbers</span><span class="cmd-desc">Python and shell in a bubblewrap sandbox with no network, for data analysis, charts and file conversion.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">remind me at five</span><span class="cmd-desc">Cron jobs, reminders and webhooks. A heartbeat follows up on open todos on its own.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">search the web</span><span class="cmd-desc">Web search through SearXNG or Brave, web pages, PDF, Word and PowerPoint files, and any MCP server.</span></button></li>
+          <li><button class="cmd-row" role="option" type="button"><span class="cmd-name">/stop</span><span class="cmd-desc">Cut short whatever it is doing in this conversation.</span></button></li>
+        </ul>
+        <p class="cmd-empty" hidden>Nothing matches. Try "voice" or "remind".</p>
+      </section>
+
+      <section id="steps" class="fields" aria-labelledby="steps-h">
+        <div class="field">
+          <h2 id="steps-h">One request</h2>
+          <div class="card" data-ui><div class="dc"><div><div class="who">you</div><div>Chart October's returns from this file and open an issue if they doubled.</div><div class="file"><b>sales-oct.csv</b><small>48 KB</small></div></div></div></div>
+          <p class="clause">First it lands in a thread.</p>
+        </div>
+        <div class="field">
+          <span></span>
+          <div class="card" data-ui><div class="dc"><div><div class="who">mokuzu</div><div>Saved the file to my workspace and charted it with Python in the sandbox.</div><div class="chart"><small>Returns per week, October</small><svg viewBox="0 0 200 70" role="img" aria-label="Returns per week: 31, 34, 52, 66"><rect x="10" y="41" width="34" height="24" fill="#232323"/><rect x="58" y="38" width="34" height="27" fill="#232323"/><rect x="106" y="24" width="34" height="41" fill="#232323"/><rect x="154" y="13" width="34" height="52" fill="#19c46b"/></svg></div></div></div></div>
+          <p class="clause">Then it works in its own folder.</p>
+        </div>
+        <div class="field">
+          <span></span>
+          <div class="card" data-ui><div class="dc"><div><div class="who">mokuzu</div><div>Returns went from 31 to 66 a week. Opening an issue.</div><pre class="block"><code>github → create_issue
+{ "title": "Returns doubled in October" }</code></pre><div class="ask-buttons"><span class="dc-btn ok">Run</span><span class="dc-btn no">Deny</span></div></div></div></div>
+          <p class="clause">It asks before changing anything outside its folder.</p>
+        </div>
+        <div class="field">
+          <span></span>
+          <div class="card" data-ui><div class="dc"><div><div class="who">mokuzu</div><pre class="block"><code>github → create_issue
+{ "title": "Returns doubled in October" }</code></pre><div class="status">✅ done</div><div class="reply">Opened issue #87 with the chart attached.</div></div></div></div>
+          <p class="clause">Then it tells you what it did.</p>
+        </div>
+      </section>
+
+      <section class="wrap showcase" aria-labelledby="todo-h">
+        <div class="grid">
+          <h2 id="todo-h" data-reveal>It follows up</h2>
+          <div class="row" style="grid-row:2; --d:1" data-ui data-reveal>
+            <div class="dc"><div class="who">mokuzu <time>15:02</time></div><div>Opened PR #214. I'll keep an eye on its CI.</div></div>
           </div>
-          <div class="feature-grid">
-            <article class="feature-card">
-              <h3>Discord-native</h3>
-              <p>DMs, server channels, a thread per conversation, slash commands, approval buttons, and an allow list for each server.</p>
-            </article>
-            <article class="feature-card">
-              <h3>Voice chat</h3>
-              <p>Talk with it in a Discord voice channel through OpenAI's Realtime API. Voice messages are transcribed.</p>
-            </article>
-            <article class="feature-card">
-              <h3>Memory per person</h3>
-              <p>Notes, skills, and todos for each user, plus search over past conversations in any language.</p>
-            </article>
-            <article class="feature-card">
-              <h3>Tools and MCP</h3>
-              <p>Web search, web pages, PDF, Word, and PowerPoint files, a browser, and any MCP server such as GitHub or Linear.</p>
-            </article>
-            <article class="feature-card">
-              <h3>Sandboxed code</h3>
-              <p>Python and shell in a bubblewrap sandbox with no network, for data analysis, charts, and file conversion.</p>
-            </article>
-            <article class="feature-card">
-              <h3>Automation</h3>
-              <p>Cron jobs, reminders, webhooks, and a heartbeat that follows up on open todos on its own.</p>
-            </article>
+          <p class="state-word" style="grid-row:2" data-reveal>Opened</p>
+          <div class="row quiet" style="grid-row:3; --d:2" data-reveal>
+            <p>Every 30 minutes a heartbeat checks the open todo in a fresh conversation. While nothing has changed, it posts nothing.</p>
+          </div>
+          <p class="state-word" style="grid-row:3" data-reveal>Quiet</p>
+          <div class="row" style="grid-row:4; --d:3" data-ui data-reveal>
+            <div class="dc"><div class="who">mokuzu <time>16:30</time></div><div>CI on PR #214 passed: all 4 jobs green. Marked it done.</div></div>
+          </div>
+          <p class="state-word" style="grid-row:4" data-reveal>Done</p>
+          <figure class="side-photo" data-reveal style="--d:2">
+            <img src="assets/eriocheir-sinensis-125052247.jpg" alt="The shell of a mitten crab lying in sand" width="1600" height="1200" loading="lazy" />
+            <figcaption>A mitten crab's shell on the shore.</figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="wrap" aria-labelledby="name-h">
+        <div class="grid name">
+          <figure data-reveal>
+            <img src="assets/eriocheirsinensis1.jpg" alt="A Chinese mitten crab on bare ground, claws raised, with tufts of hair on its claws" width="1600" height="1040" loading="lazy" />
+            <figcaption>A Chinese mitten crab, Eriocheir sinensis, by the Elbe.</figcaption>
+          </figure>
+          <div class="copy">
+            <h2 id="name-h" data-reveal>Named after a crab</h2>
+            <p data-reveal style="--d:1">Mokuzugani is the Japanese name for the mitten crab, whose hairy claws look like they hold a tuft of seaweed scraps.</p>
+            <p data-reveal style="--d:2">Like the crab, it keeps its claws close: it reads freely, writes only in its own workspace, and by default asks you before changing anything else. It never gets a shell on your machine.</p>
           </div>
         </div>
       </section>
 
-      <section class="section">
-        <div class="container">
-          <div class="section-header">
-            <div class="section-kicker">Why mokuzu</div>
-            <h2>An AI agent without a shell on your machine.</h2>
+      <section class="pi" aria-labelledby="pi-h">
+        <div class="wrap grid">
+          <div class="copy">
+            <h2 id="pi-h" data-reveal>Runs on a Raspberry Pi</h2>
+            <p data-reveal style="--d:1">One binary, one SQLite file and a background service. It sits on a shelf and answers in Discord.</p>
+            <ul class="specs" data-reveal style="--d:2">
+              <li>Linux on arm64 and x86_64<span>Prebuilt, glibc 2.35 or newer</span></li>
+              <li>macOS and everything else<span>Build from source with cargo install</span></li>
+              <li>Claude, Copilot, ChatGPT or OpenCode Go<span>An API key, or your subscription through OAuth</span></li>
+            </ul>
           </div>
-          <div class="compare-grid">
-            <article class="compare-card">
-              <h3>Mokuzu vs OpenClaw</h3>
-              <p>Mokuzu reads freely, writes only to its own workspace, and asks before anything else, instead of giving the model a shell.</p>
-            </article>
-            <article class="compare-card">
-              <h3>Built for Discord first</h3>
-              <p>A whole server can share one bot while each person keeps their own memory, and you can talk with it in a voice channel.</p>
-            </article>
-            <article class="compare-card">
-              <h3>Your choice of model</h3>
-              <p>Claude through the Anthropic API, OpenCode Go, or your GitHub Copilot or OpenAI ChatGPT subscription through OAuth.</p>
-            </article>
-          </div>
+          <figure data-reveal style="--d:1">
+            <img src="assets/raspberry-pi-4-model-b-side.jpg" alt="A Raspberry Pi 4 Model B board seen from the side" width="1600" height="941" loading="lazy" />
+            <figcaption>A Raspberry Pi 4 Model B, about the size of a deck of cards.</figcaption>
+          </figure>
         </div>
       </section>
 
-      <section id="install" class="section">
-        <div class="container">
-          <div class="section-header">
-            <div class="section-kicker">Install</div>
-            <h2>Up and running in three commands.</h2>
-            <p class="section-copy">Prebuilt for Linux on arm64 and x86_64 (glibc 2.35 or newer). Elsewhere, build from source with <code>cargo install</code>.</p>
-          </div>
-          <div class="code-block">
-            curl -fsSL https://raw.githubusercontent.com/xianyuntang/mokuzu/main/install.sh | sh<br />
-            mokuzu configure<br />
-            mokuzu install
-          </div>
-        </div>
-      </section>
-
-      <section id="faq" class="section">
-        <div class="container">
-          <div class="section-header">
-            <div class="section-kicker">FAQ</div>
-            <h2>Common questions.</h2>
-          </div>
-          <div class="faq-grid">
-            <article class="faq-card">
-              <h3>Can I run mokuzu on a Raspberry Pi?</h3>
-              <p>Yes. The release binary runs on a Raspberry Pi 4 or 5 with a 64-bit OS.</p>
-            </article>
-            <article class="faq-card">
-              <h3>Is it safe to run on my own machine?</h3>
-              <p>Its own tools cannot change anything outside its workspace, and code runs in a sandbox without network. MCP calls and settings changes need your approval.</p>
-            </article>
-            <article class="faq-card">
-              <h3>Is mokuzu free?</h3>
-              <p>Yes. It is open source under MIT or Apache-2.0. You pay your model provider for what it uses.</p>
-            </article>
-          </div>
-        </div>
-      </section>
-
-      <section class="section">
-        <div class="container">
-          <div class="cta-panel">
-            <div>
-              <div class="section-kicker">Get started</div>
-              <h2>Run your own AI agent today.</h2>
-              <p class="section-copy">Read the setup guide and download the latest release on GitHub.</p>
+      <section id="faq" class="wrap faq" aria-labelledby="faq-h">
+        <div class="grid">
+          <div class="list">
+            <h2 id="faq-h" data-reveal>Questions</h2>
+            <div role="tablist" aria-orientation="vertical" aria-labelledby="faq-h">
+              <button class="q" role="tab" type="button" aria-selected="true" aria-controls="a1" id="q1">Can I run it on a Raspberry Pi?</button>
+              <p class="inline-answer">Yes. The arm64 release runs on a Raspberry Pi 4 or 5 with a 64-bit OS.</p>
+              <button class="q" role="tab" type="button" aria-selected="false" aria-controls="a2" id="q2">Which models does it work with?</button>
+              <p class="inline-answer" hidden>Claude with an Anthropic API key, the models on OpenCode Go, or your GitHub Copilot or OpenAI ChatGPT subscription. Voice needs an OpenAI key.</p>
+              <button class="q" role="tab" type="button" aria-selected="false" aria-controls="a3" id="q3">Is it safe on my own machine?</button>
+              <p class="inline-answer" hidden>Its own tools change nothing outside its workspace, hidden files like ~/.ssh are refused, and code runs without network. MCP calls and settings changes wait for your approval, unless you let a server run without asking or turn on auto mode, where a reviewer model passes the low-risk ones.</p>
+              <button class="q" role="tab" type="button" aria-selected="false" aria-controls="a4" id="q4">Does it work outside Discord?</button>
+              <p class="inline-answer" hidden>No. It runs only as a Discord bot: DMs, server channels, threads and voice channels.</p>
+              <button class="q" role="tab" type="button" aria-selected="false" aria-controls="a5" id="q5">Is it free?</button>
+              <p class="inline-answer" hidden>Yes, open source under MIT or Apache-2.0. You pay your model provider for what it uses.</p>
             </div>
-            <a class="button button-primary" href="https://github.com/xianyuntang/mokuzu#quick-start">Read the guide</a>
           </div>
+          <div class="answers" aria-live="polite">
+            <p class="answer" id="a1" role="tabpanel" aria-labelledby="q1">Yes. The arm64 release runs on a Raspberry Pi 4 or 5 with a 64-bit OS.</p>
+            <p class="answer" id="a2" role="tabpanel" aria-labelledby="q2" hidden>Claude with an Anthropic API key, the models on OpenCode Go, or your GitHub Copilot or OpenAI ChatGPT subscription. Voice needs an OpenAI key.</p>
+            <p class="answer" id="a3" role="tabpanel" aria-labelledby="q3" hidden>Its own tools change nothing outside its workspace, hidden files like ~/.ssh are refused, and code runs without network. MCP calls and settings changes wait for your approval, unless you let a server run without asking or turn on auto mode, where a reviewer model passes the low-risk ones.</p>
+            <p class="answer" id="a4" role="tabpanel" aria-labelledby="q4" hidden>No. It runs only as a Discord bot: DMs, server channels, threads and voice channels.</p>
+            <p class="answer" id="a5" role="tabpanel" aria-labelledby="q5" hidden>Yes, open source under MIT or Apache-2.0. You pay your model provider for what it uses.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="install" class="wrap install" aria-labelledby="install-h">
+        <h2 id="install-h" data-reveal>Put it on your Pi tonight</h2>
+        <p class="lede" data-reveal style="--d:1">Download it, give it a Discord token and a model, then run it in the background.</p>
+        <div class="cmdline" data-reveal style="--d:2">
+<pre><code>curl -fsSL https://raw.githubusercontent.com/xianyuntang/mokuzu/main/install.sh | sh
+mokuzu configure
+mokuzu install</code></pre>
+          <button class="button" type="button" id="copy">Copy</button>
         </div>
       </section>
     </main>
 
-    <footer class="footer">
-      <div class="container footer-inner">
-        <span>Mokuzu is open source under MIT or Apache-2.0.</span>
-        <span><a href="https://github.com/xianyuntang/mokuzu">GitHub</a> · <a href="https://github.com/xianyuntang/mokuzu/releases">Releases</a></span>
+    <footer>
+      <div class="tile t-state">
+        <p>A self-hosted AI agent for Discord, written in Rust.</p>
+        <p class="small">Open source under MIT or Apache-2.0.</p>
       </div>
+      <nav class="tile t-nav" aria-label="Footer">
+        <ul>
+          <li><a href="https://github.com/xianyuntang/mokuzu">Source on GitHub</a></li>
+          <li><a href="https://github.com/xianyuntang/mokuzu/releases">Releases</a></li>
+          <li><a href="https://github.com/xianyuntang/mokuzu#quick-start">Setup guide</a></li>
+          <li><a href="https://github.com/xianyuntang/mokuzu#approval">How approval works</a></li>
+        </ul>
+      </nav>
+      <div class="tile t-credit">
+        <p>Pictures: <a href="https://commons.wikimedia.org/wiki/File:EriocheirSinensis1.jpg">“EriocheirSinensis1”</a> by Christian Fischer, <a href="https://creativecommons.org/licenses/by-sa/3.0">CC BY-SA 3.0</a>; <a href="https://commons.wikimedia.org/wiki/File:Eriocheir_sinensis_125052247.jpg">“Eriocheir sinensis 125052247”</a> by Michel Langeveld, <a href="https://creativecommons.org/licenses/by-sa/4.0">CC BY-SA 4.0</a>; <a href="https://commons.wikimedia.org/wiki/File:Raspberry_Pi_4_Model_B_-_Side.jpg">“Raspberry Pi 4 Model B - Side”</a> by Laserlicht, <a href="https://creativecommons.org/licenses/by-sa/4.0">CC BY-SA 4.0</a>. All via Wikimedia Commons.</p>
+      </div>
+      <div class="tile t-mail">
+        <p class="small">Found a bug?</p>
+        <a href="https://github.com/xianyuntang/mokuzu/issues">Open an issue</a>
+      </div>
+      <div class="tile t-word" aria-hidden="true"><span>mokuzu</span></div>
+      <a class="tile t-go" href="https://github.com/xianyuntang/mokuzu">
+        <span>Star it on GitHub</span>
+        <svg width="56" height="56" viewBox="0 0 56 56" fill="none" aria-hidden="true"><path d="M12 44 44 12M18 12h26v26" stroke="#232323" stroke-width="4"/></svg>
+      </a>
     </footer>
+
+    <script>
+      // Hero: the approval message, as mokuzu posts it in Discord.
+      (() => {
+        const demo = document.getElementById('demo');
+        const status = demo.querySelector('.status');
+        const reply = demo.querySelector('.reply');
+        const again = demo.querySelector('.again');
+        const row = demo.querySelector('.ask-buttons');
+        const buttons = row.querySelectorAll('.dc-btn');
+        let timer;
+        buttons.forEach((b) => b.addEventListener('click', () => {
+          const ok = b.dataset.act === 'ok';
+          row.hidden = true;
+          status.textContent = ok ? '▶️ running…' : '✖️ denied';
+          timer = setTimeout(() => {
+            if (ok) status.textContent = '✅ done';
+            reply.textContent = ok ? 'MOK-48 is Done in Linear.' : 'Okay, I left MOK-48 as it is.';
+            reply.hidden = false; again.hidden = false;
+          }, ok ? 900 : 300);
+        }));
+        again.addEventListener('click', () => {
+          clearTimeout(timer);
+          status.textContent = ''; reply.hidden = true; again.hidden = true; row.hidden = false;
+          buttons[0].focus();
+        });
+      })();
+
+      // Command menu: filter, select by hover, click or arrow keys.
+      (() => {
+        const input = document.getElementById('cmd');
+        const rows = [...document.querySelectorAll('.cmd-row')];
+        const empty = document.querySelector('.cmd-empty');
+        const visible = () => rows.filter((r) => !r.parentElement.hidden);
+        const select = (row) => rows.forEach((r) => r.setAttribute('aria-selected', String(r === row)));
+        select(rows[0]);
+        rows.forEach((r) => {
+          r.addEventListener('mouseenter', () => select(r));
+          r.addEventListener('focus', () => select(r));
+          r.addEventListener('click', () => select(r));
+        });
+        input.addEventListener('input', () => {
+          const q = input.value.trim().toLowerCase();
+          rows.forEach((r) => (r.parentElement.hidden = Boolean(q) && !r.textContent.toLowerCase().includes(q)));
+          const v = visible();
+          empty.hidden = v.length > 0;
+          if (v.length) select(v[0]);
+        });
+        const move = (e) => {
+          if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+          const v = visible(); if (!v.length) return;
+          e.preventDefault();
+          const i = v.findIndex((r) => r.getAttribute('aria-selected') === 'true');
+          const next = v[(i + (e.key === 'ArrowDown' ? 1 : v.length - 1)) % v.length];
+          select(next);
+          if (e.target !== input) next.focus();
+        };
+        input.addEventListener('keydown', move);
+        rows.forEach((r) => r.addEventListener('keydown', move));
+      })();
+
+      // FAQ: the answer pane follows the questions.
+      (() => {
+        const qs = [...document.querySelectorAll('.q')];
+        const show = (q) => qs.forEach((x) => {
+          const on = x === q;
+          x.setAttribute('aria-selected', String(on));
+          document.getElementById(x.getAttribute('aria-controls')).hidden = !on;
+          x.nextElementSibling.hidden = !on;
+        });
+        qs.forEach((q) => {
+          q.addEventListener('click', () => show(q));
+          q.addEventListener('focus', () => show(q));
+          q.addEventListener('mouseenter', () => { if (matchMedia('(min-width: 901px)').matches) show(q); });
+        });
+      })();
+
+      // Copy the install lines.
+      (() => {
+        const btn = document.getElementById('copy');
+        btn.addEventListener('click', async () => {
+          try { await navigator.clipboard.writeText(document.querySelector('.cmdline code').textContent); btn.textContent = 'Copied'; }
+          catch { btn.textContent = 'Select and copy'; }
+          setTimeout(() => (btn.textContent = 'Copy'), 2000);
+        });
+      })();
+
+      // Reveal once on entry; never leaves content hidden.
+      (() => {
+        const targets = document.querySelectorAll('[data-reveal]');
+        if (!('IntersectionObserver' in window)) { targets.forEach((el) => el.classList.add('is-in')); return; }
+        const io = new IntersectionObserver((entries) => {
+          for (const e of entries) if (e.isIntersecting) { e.target.classList.add('is-in'); io.unobserve(e.target); }
+        }, { rootMargin: '0px 0px -12% 0px', threshold: 0.1 });
+        targets.forEach((el) => io.observe(el));
+        addEventListener('load', () => setTimeout(() => targets.forEach((el) => {
+          const r = el.getBoundingClientRect(); if (r.top < innerHeight && r.bottom > 0) el.classList.add('is-in');
+        }), 2500));
+      })();
+    </script>
   </body>
 </html>
