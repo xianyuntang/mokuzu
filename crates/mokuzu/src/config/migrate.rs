@@ -16,7 +16,8 @@ pub const VERSION: i64 = 2;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
-const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [spell_out_defaults, add_browser];
+const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] =
+    [spell_out_defaults, add_browser];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
 pub fn migrate(text: &str) -> Result<Option<String>> {
@@ -193,8 +194,10 @@ fn add_browser(doc: &mut DocumentMut) -> Result<()> {
             .get("args")
             .and_then(Item::as_array)
             .is_some_and(|args| {
-                args.iter()
-                    .any(|arg| arg.as_str().is_some_and(|arg| arg.contains(BROWSER_PACKAGE)))
+                args.iter().any(|arg| {
+                    arg.as_str()
+                        .is_some_and(|arg| arg.contains(BROWSER_PACKAGE))
+                })
             })
     });
     if !runs_it && !servers.contains_key(BROWSER_SERVER) {
@@ -293,7 +296,10 @@ mod tests {
     fn version_1_adds_the_browser_unless_one_is_there() {
         let old = "version = 1\n[database]\npath = \"/home/me/.local/share/mokuzu/mokuzu.db\"\n";
         let new = migrate(old).expect("valid").expect("migrated");
-        assert!(new.contains("[mcp.servers.browser]\ncommand = \"uvx\""), "{new}");
+        assert!(
+            new.contains("[mcp.servers.browser]\ncommand = \"uvx\""),
+            "{new}"
+        );
         assert!(!new.contains("[mcp]\n"), "no empty [mcp] header: {new}");
         assert!(
             new.contains("STEALTHFOX_PROFILE_DIR = \"/home/me/.local/share/mokuzu/stealthfox\""),
@@ -305,7 +311,10 @@ mod tests {
             "{old}[mcp.servers.stealth]\ncommand = \"uvx\"\nargs = [\"invisible-playwright-mcp\"]\napprove = true\n"
         );
         let new = migrate(&mine).expect("valid").expect("migrated");
-        assert!(!new.contains("servers.browser"), "kept the user's own: {new}");
+        assert!(
+            !new.contains("servers.browser"),
+            "kept the user's own: {new}"
+        );
         assert!(new.contains("approve = true"), "{new}");
     }
 

@@ -9,9 +9,9 @@ use serde::Deserialize;
 mod migrate;
 
 pub use migrate::VERSION;
-pub use migrate::{BROWSER_SERVER, browser_server};
 #[cfg(test)]
 pub use migrate::migrate;
+pub use migrate::{BROWSER_SERVER, browser_server};
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
