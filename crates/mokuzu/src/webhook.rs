@@ -262,7 +262,6 @@ mod tests {
             id: 1,
             name: "CI".to_owned(),
             target: "discord:1".to_owned(),
-            user: 1,
             prompt: "say how CI went".to_owned(),
             secret: "s".to_owned(),
         };
@@ -285,7 +284,6 @@ mod tests {
         let db = Db::open_in_memory().expect("open");
         db.add_hook(
             "discord:1".into(),
-            7,
             "CI".into(),
             "report".into(),
             "abc".into(),

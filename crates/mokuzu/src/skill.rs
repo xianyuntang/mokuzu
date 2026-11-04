@@ -1,5 +1,5 @@
-//! Skills: reusable how-to instructions for recurring tasks, kept in the database, one set per
-//! person like memory. The system prompt lists their names and descriptions; the `skill` tool loads one's
+//! Skills: reusable how-to instructions for recurring tasks, kept in the database, shared by
+//! every conversation like memory. The system prompt lists their names and descriptions; the `skill` tool loads one's
 //! content when a task matches, saves skills on its own, and removes them after the user approves.
 
 use rig_core::completion::ToolDefinition;
@@ -16,7 +16,7 @@ const MAX_NAME_CHARS: usize = 64;
 pub fn section(skills: &[Skill]) -> String {
     let guidance = "\
 # Skills
-Skills are saved instructions for recurring tasks, kept for this user. Lean on them: before \
+Skills are saved instructions for recurring tasks, kept for the user. Lean on them: before \
 starting any task, check the list below, and when a skill's description is even close, load it \
 with the skill tool and follow it. Keep them current without being asked: after a multi-step task \
 that is likely to come up again (a report format, a lookup procedure, a workflow, a site's quirks), \

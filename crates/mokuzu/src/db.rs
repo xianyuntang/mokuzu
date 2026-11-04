@@ -109,8 +109,6 @@ pub struct Job {
     pub target: String,
     /// Cron expression; `None` runs once.
     pub schedule: Option<String>,
-    /// Discord user who made it, whose memory its runs load.
-    pub user: u64,
     pub prompt: String,
     /// Unix seconds.
     pub next_run: i64,
@@ -123,8 +121,6 @@ pub struct Hook {
     pub name: String,
     /// Conversation key the webhook was made in, where its runs post.
     pub target: String,
-    /// Discord user who made it, whose memory its runs load.
-    pub user: u64,
     pub prompt: String,
     /// Path segment after `/hook/` that wakes it.
     pub secret: String,
@@ -136,7 +132,6 @@ impl Hook {
             id: row.get("id")?,
             name: row.get("name")?,
             target: row.get("target")?,
-            user: row.get::<_, i64>("user_id")?.cast_unsigned(),
             prompt: row.get("prompt")?,
             secret: row.get("secret")?,
         })
@@ -150,7 +145,6 @@ impl Job {
             name: row.get("name")?,
             target: row.get("target")?,
             schedule: row.get("schedule")?,
-            user: row.get::<_, i64>("user_id")?.cast_unsigned(),
             prompt: row.get("prompt")?,
             next_run: row.get("next_run")?,
         })
@@ -164,15 +158,10 @@ pub struct Hit {
     pub at: String,
     pub role: String,
     pub text: String,
-    /// Whether it is from the conversation searched from, rather than another of the user's.
+    /// Whether it is from the conversation searched from, rather than another one.
     pub here: bool,
     /// For a user message, the text of the model's next message after it: usually its answer.
     pub reply: Option<String>,
-}
-
-/// A Discord user ID as SQLite's signed integer; the cast keeps every bit, so it reads back exactly.
-fn sql_user(user: u64) -> i64 {
-    user.cast_signed()
 }
 
 /// Shared handle; every query runs on Tokio's blocking pool.
@@ -251,17 +240,11 @@ impl Db {
         .await
     }
 
-    /// Appends messages (JSON objects with a `role`) in one transaction. `user` is whose turn
-    /// wrote them, `None` for chat nobody asked the bot about.
-    pub async fn append(
-        &self,
-        conversation_id: i64,
-        user: Option<u64>,
-        messages: Vec<Value>,
-    ) -> Result<()> {
+    /// Appends a turn's messages (JSON objects with a `role`) in one transaction.
+    pub async fn append(&self, conversation_id: i64, messages: Vec<Value>) -> Result<()> {
         self.with_conn(move |conn| {
             let tx = conn.transaction()?;
-            insert_messages(&tx, conversation_id, user, &messages)?;
+            insert_messages(&tx, conversation_id, true, &messages)?;
             tx.commit()?;
             Ok(())
         })
@@ -269,8 +252,8 @@ impl Db {
     }
 
     /// Replaces the conversation's live history with `messages`, archiving the old rows. The new
-    /// rows belong to nobody: they are a summary, or copies of turns whose archived originals
-    /// already show up in their sender's searches.
+    /// rows are not from a turn: they are a summary, or copies of turns whose archived originals
+    /// already show up in searches.
     pub async fn rewrite(&self, conversation_id: i64, messages: Vec<Value>) -> Result<()> {
         self.with_conn(move |conn| {
             let tx = conn.transaction()?;
@@ -278,7 +261,7 @@ impl Db {
                 "UPDATE messages SET archived = 1 WHERE conversation_id = ?1",
                 params![conversation_id],
             )?;
-            insert_messages(&tx, conversation_id, None, &messages)?;
+            insert_messages(&tx, conversation_id, false, &messages)?;
             tx.commit()?;
             Ok(())
         })
@@ -298,12 +281,11 @@ impl Db {
     }
 
     /// Messages out of the conversation's context whose text contains every one of `terms`
-    /// (ignoring ASCII case), newest first: its archived ones, and `user`'s in any other
+    /// (ignoring ASCII case), newest first: its archived ones, and turns of every other
     /// conversation.
     pub async fn search(
         &self,
         conversation_id: i64,
-        user: u64,
         terms: Vec<String>,
         limit: usize,
     ) -> Result<Vec<Hit>> {
@@ -321,14 +303,11 @@ impl Db {
                      ) END
                  FROM message_text JOIN messages ON messages.id = message_text.rowid
                  WHERE ((messages.conversation_id = ?1 AND messages.archived = 1)
-                     OR (messages.user_id = ?2 AND messages.conversation_id != ?1))"
+                     OR (messages.from_turn IS NOT NULL AND messages.conversation_id != ?1))"
                 .to_owned();
             // The trigram index serves LIKE for terms of three or more characters; shorter
             // ones scan the candidate rows.
-            let mut values = vec![
-                rusqlite::types::Value::from(conversation_id),
-                sql_user(user).into(),
-            ];
+            let mut values = vec![rusqlite::types::Value::from(conversation_id)];
             for term in terms {
                 sql.push_str(" AND message_text.text LIKE ?");
                 let term = term.replace(['%', '_'], "");
@@ -353,12 +332,10 @@ impl Db {
 }
 
 impl Db {
-    /// `user`'s entries.
-    pub async fn memories(&self, user: u64) -> Result<Vec<Memory>> {
+    pub async fn memories(&self) -> Result<Vec<Memory>> {
         self.with_conn(move |conn| {
-            let mut stmt =
-                conn.prepare("SELECT id, content FROM memories WHERE user_id = ?1 ORDER BY id")?;
-            let rows = stmt.query_map(params![sql_user(user)], Memory::from_row)?;
+            let mut stmt = conn.prepare("SELECT id, content FROM memories ORDER BY id")?;
+            let rows = stmt.query_map([], Memory::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
@@ -366,60 +343,56 @@ impl Db {
 
     // ponytail: edits are planned against a read taken just before; two processes editing
     // memory at the same instant could overshoot the budget slightly.
-    /// Applies `edit` to `user`'s entries; ids of someone else's entries match nothing.
-    pub async fn save_memory(&self, user: u64, edit: Edit) -> Result<()> {
+    pub async fn save_memory(&self, edit: Edit) -> Result<()> {
         self.with_conn(move |conn| {
             match edit {
                 Edit::Add(content) => conn.execute(
-                    "INSERT INTO memories (content, user_id) VALUES (?1, ?2)",
-                    params![content, sql_user(user)],
+                    "INSERT INTO memories (content) VALUES (?1)",
+                    params![content],
                 )?,
                 Edit::Replace(id, content) => conn.execute(
-                    "UPDATE memories SET content = ?2 WHERE id = ?1 AND user_id = ?3",
-                    params![id, content, sql_user(user)],
+                    "UPDATE memories SET content = ?2 WHERE id = ?1",
+                    params![id, content],
                 )?,
-                Edit::Remove(id) => conn.execute(
-                    "DELETE FROM memories WHERE id = ?1 AND user_id = ?2",
-                    params![id, sql_user(user)],
-                )?,
+                Edit::Remove(id) => {
+                    conn.execute("DELETE FROM memories WHERE id = ?1", params![id])?
+                }
             };
             Ok(())
         })
         .await
     }
 
-    /// `user`'s skills by name.
-    pub async fn skills(&self, user: u64) -> Result<Vec<Skill>> {
+    /// Every skill, by name.
+    pub async fn skills(&self) -> Result<Vec<Skill>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT name, description, content FROM skills WHERE user_id = ?1 ORDER BY name",
-            )?;
-            let rows = stmt.query_map(params![sql_user(user)], Skill::from_row)?;
+            let mut stmt =
+                conn.prepare("SELECT name, description, content FROM skills ORDER BY name")?;
+            let rows = stmt.query_map([], Skill::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
         .await
     }
 
-    /// Creates `skill` for `user`, or replaces their one with its name.
-    pub async fn save_skill(&self, user: u64, skill: Skill) -> Result<()> {
+    /// Creates `skill`, or replaces the one with its name.
+    pub async fn save_skill(&self, skill: Skill) -> Result<()> {
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO skills (user_id, name, description, content) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT (ifnull(user_id, 0), name) DO UPDATE SET description = excluded.description,
+                "INSERT INTO skills (name, description, content) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (name) DO UPDATE SET description = excluded.description,
                      content = excluded.content,
                      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-                params![sql_user(user), skill.name, skill.description, skill.content],
+                params![skill.name, skill.description, skill.content],
             )?;
             Ok(())
         })
         .await
     }
 
-    /// Deletes `user`'s skill named `name`; false if they had none.
-    pub async fn remove_skill(&self, user: u64, name: String) -> Result<bool> {
+    /// Deletes the skill named `name`; false if there was none.
+    pub async fn remove_skill(&self, name: String) -> Result<bool> {
         self.with_conn(move |conn| {
-            let sql = "DELETE FROM skills WHERE name = ?1 AND user_id = ?2";
-            Ok(conn.execute(sql, params![name, sql_user(user)])? > 0)
+            Ok(conn.execute("DELETE FROM skills WHERE name = ?1", params![name])? > 0)
         })
         .await
     }
@@ -428,7 +401,7 @@ impl Db {
     pub async fn jobs(&self) -> Result<Vec<Job>> {
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT id, name, target, schedule, prompt, next_run, user_id FROM jobs
+                "SELECT id, name, target, schedule, prompt, next_run FROM jobs
                  ORDER BY next_run, id",
             )?;
             let rows = stmt.query_map([], Job::from_row)?;
@@ -438,19 +411,12 @@ impl Db {
     }
 
     /// Stores a job that posts to the conversation `target` and returns its id.
-    pub async fn add_job(&self, target: String, user: u64, job: NewJob) -> Result<i64> {
+    pub async fn add_job(&self, target: String, job: NewJob) -> Result<i64> {
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO jobs (name, target, schedule, prompt, next_run, user_id)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    job.name,
-                    target,
-                    job.schedule,
-                    job.prompt,
-                    job.next_run,
-                    sql_user(user)
-                ],
+                "INSERT INTO jobs (name, target, schedule, prompt, next_run)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![job.name, target, job.schedule, job.prompt, job.next_run],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -491,9 +457,8 @@ impl Db {
     /// Every webhook, oldest first.
     pub async fn hooks(&self) -> Result<Vec<Hook>> {
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, name, target, user_id, prompt, secret FROM webhooks ORDER BY id",
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT id, name, target, prompt, secret FROM webhooks ORDER BY id")?;
             let rows = stmt.query_map([], Hook::from_row)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
@@ -505,8 +470,7 @@ impl Db {
         self.with_conn(move |conn| {
             Ok(conn
                 .query_row(
-                    "SELECT id, name, target, user_id, prompt, secret FROM webhooks
-                     WHERE secret = ?1",
+                    "SELECT id, name, target, prompt, secret FROM webhooks WHERE secret = ?1",
                     params![secret],
                     Hook::from_row,
                 )
@@ -519,16 +483,14 @@ impl Db {
     pub async fn add_hook(
         &self,
         target: String,
-        user: u64,
         name: String,
         prompt: String,
         secret: String,
     ) -> Result<i64> {
         self.with_conn(move |conn| {
             conn.execute(
-                "INSERT INTO webhooks (name, target, user_id, prompt, secret)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![name, target, sql_user(user), prompt, secret],
+                "INSERT INTO webhooks (name, target, prompt, secret) VALUES (?1, ?2, ?3, ?4)",
+                params![name, target, prompt, secret],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -547,12 +509,13 @@ impl Db {
 fn insert_messages(
     conn: &Connection,
     conversation_id: i64,
-    user: Option<u64>,
+    from_turn: bool,
     messages: &[Value],
 ) -> Result<()> {
     let mut stmt = conn.prepare(
-        "INSERT INTO messages (conversation_id, role, content, user_id) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO messages (conversation_id, role, content, from_turn) VALUES (?1, ?2, ?3, ?4)",
     )?;
+    let from_turn = from_turn.then_some(1);
     for message in messages {
         let Some(role) = message["role"].as_str() else {
             bail!("message without a role: {message}");
@@ -561,7 +524,7 @@ fn insert_messages(
             conversation_id,
             role,
             message.to_string(),
-            user.map(sql_user)
+            from_turn
         ])?;
     }
     Ok(())
@@ -589,7 +552,6 @@ mod tests {
         let id = db
             .add_hook(
                 "discord:1".into(),
-                7,
                 "CI".into(),
                 "report".into(),
                 "s3cret".into(),
@@ -597,7 +559,10 @@ mod tests {
             .await
             .expect("add");
         let hook = db.hook_by_secret("s3cret".into()).await.expect("query");
-        assert_eq!(hook.as_ref().map(|h| (h.id, h.user)), Some((id, 7)));
+        assert_eq!(
+            hook.as_ref().map(|h| (h.id, h.name.as_str())),
+            Some((id, "CI"))
+        );
         assert_eq!(
             db.hook_by_secret("other".into()).await.expect("query"),
             None
@@ -628,7 +593,7 @@ mod tests {
             json!({"role": "user", "content": "hi"}),
             json!({"role": "assistant", "content": [{"type": "text", "text": "hello"}]}),
         ];
-        db.append(conversation.id, Some(7), turn.clone())
+        db.append(conversation.id, turn.clone())
             .await
             .expect("append");
         let stored: Vec<Value> = db
@@ -653,7 +618,6 @@ mod tests {
         let tool = json!({"role": "user", "content": [{"type": "toolresult", "content": [{"type": "text", "text": "貓咪 tool output"}]}]});
         db.append(
             conversation.id,
-            Some(7),
             vec![
                 text("user", "我家的貓咪叫 Mochi"),
                 tool,
@@ -662,13 +626,12 @@ mod tests {
         )
         .await
         .expect("append");
-        db.append(other.id, Some(8), vec![text("user", "別人的貓咪")])
+        db.append(other.id, vec![text("user", "別的對話")])
             .await
             .expect("append");
         let search = |terms: &[&str]| {
             db.search(
                 conversation.id,
-                7,
                 terms.iter().map(|t| (*t).to_owned()).collect(),
                 10,
             )
@@ -699,45 +662,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_reaches_the_users_other_conversations() {
+    async fn search_reaches_other_conversations_turns_only() {
         let db = Db::open_in_memory().expect("open");
         let here = db.conversation("discord:1").await.expect("conversation").id;
         let thread = db.conversation("discord:2").await.expect("conversation").id;
         let text =
             |text: &str| json!({"role": "user", "content": [{"type": "text", "text": text}]});
-        db.append(thread, Some(7), vec![text("那家拉麵店叫一蘭")])
+        db.append(thread, vec![text("那家拉麵店叫一蘭")])
             .await
             .expect("append");
-        db.append(thread, Some(8), vec![text("我推薦的拉麵店是天下一品")])
+        // A compaction's copies of earlier turns, which are not searched twice.
+        db.rewrite(thread, vec![text("summary: 拉麵店 一蘭")])
             .await
-            .expect("append");
-        db.append(thread, None, vec![text("聽說拉麵店很多")])
-            .await
-            .expect("append");
+            .expect("rewrite");
         let hits = db
-            .search(here, 7, vec!["拉麵店".to_owned()], 10)
+            .search(here, vec!["拉麵店".to_owned()], 10)
             .await
             .expect("search");
-        assert_eq!(hits.len(), 1, "only their own messages: {hits:?}");
+        assert_eq!(hits.len(), 1, "only turns: {hits:?}");
         assert_eq!(
             (hits[0].text.as_str(), hits[0].here),
             ("那家拉麵店叫一蘭", false)
         );
-        assert!(
-            db.search(here, 9, vec!["拉麵店".to_owned()], 10)
-                .await
-                .expect("search")
-                .is_empty()
-        );
     }
 
     #[tokio::test]
-    async fn memories_round_trip_per_user() {
+    async fn memories_round_trip() {
         let db = Db::open_in_memory().expect("open");
-        let contents = |user| {
+        let contents = || {
             let db = db.clone();
             async move {
-                db.memories(user)
+                db.memories()
                     .await
                     .expect("load")
                     .into_iter()
@@ -745,63 +700,89 @@ mod tests {
                     .collect::<Vec<_>>()
             }
         };
-        for (user, text) in [(6, "a"), (6, "b"), (7, "mine")] {
-            db.save_memory(user, Edit::Add(text.to_owned()))
+        for text in ["a", "b"] {
+            db.save_memory(Edit::Add(text.to_owned()))
                 .await
                 .expect("add");
         }
-        let theirs = contents(6).await;
-        let mine = contents(7).await;
-        assert_eq!(mine.len(), 1);
-        assert!(contents(8).await.is_empty());
-
-        db.save_memory(6, Edit::Replace(theirs[0].0, "a2".to_owned()))
+        let entries = contents().await;
+        db.save_memory(Edit::Replace(entries[0].0, "a2".to_owned()))
             .await
             .expect("replace");
-        db.save_memory(6, Edit::Remove(theirs[1].0))
+        db.save_memory(Edit::Remove(entries[1].0))
             .await
             .expect("remove");
-        // Someone else's entry id changes nothing.
-        db.save_memory(8, Edit::Remove(mine[0].0))
+        let texts = contents()
             .await
-            .expect("remove");
-        let texts =
-            |entries: Vec<(i64, String)>| entries.into_iter().map(|e| e.1).collect::<Vec<_>>();
-        assert_eq!(texts(contents(6).await), ["a2"]);
-        assert_eq!(texts(contents(7).await), ["mine"]);
+            .into_iter()
+            .map(|e| e.1)
+            .collect::<Vec<_>>();
+        assert_eq!(texts, ["a2"]);
     }
 
     #[tokio::test]
-    async fn skills_round_trip_per_user() {
+    async fn skills_round_trip() {
         let db = Db::open_in_memory().expect("open");
         let skill = |name: &str, content: &str| Skill {
             name: name.to_owned(),
             description: "d".to_owned(),
             content: content.to_owned(),
         };
-        db.save_skill(6, skill("b", "one")).await.expect("save");
-        db.save_skill(6, skill("a", "x")).await.expect("save");
-        db.save_skill(6, skill("b", "two")).await.expect("replace");
-        db.save_skill(7, skill("b", "mine")).await.expect("save");
-        db.save_skill(7, skill("b", "mine2"))
-            .await
-            .expect("replace");
-        let skills = db.skills(6).await.expect("load");
-        assert_eq!(skills, [skill("a", "x"), skill("b", "two")]);
-        assert_eq!(db.skills(7).await.expect("load"), [skill("b", "mine2")]);
-        assert!(
-            !db.remove_skill(7, "a".to_owned())
-                .await
-                .expect("not theirs")
+        db.save_skill(skill("b", "one")).await.expect("save");
+        db.save_skill(skill("a", "x")).await.expect("save");
+        db.save_skill(skill("b", "two")).await.expect("replace");
+        assert_eq!(
+            db.skills().await.expect("load"),
+            [skill("a", "x"), skill("b", "two")]
         );
-        assert!(db.remove_skill(6, "a".to_owned()).await.expect("remove"));
-        assert!(
-            !db.remove_skill(6, "a".to_owned())
-                .await
-                .expect("remove again")
+        assert!(db.remove_skill("a".to_owned()).await.expect("remove"));
+        assert!(!db.remove_skill("a".to_owned()).await.expect("remove again"));
+        assert_eq!(db.skills().await.expect("load"), [skill("b", "two")]);
+    }
+
+    #[test]
+    fn per_user_rows_merge_into_one_set() {
+        let migrations = migrations().expect("load");
+        let mut conn = Connection::open_in_memory().expect("open");
+        conn.pragma_update(None, "foreign_keys", true).expect("fk");
+        migrations
+            .to_version(&mut conn, 18)
+            .expect("old migrations");
+        conn.execute_batch(
+            "INSERT INTO conversations (key) VALUES ('discord:1');
+             INSERT INTO memories (content, user_id) VALUES ('mine', 6), ('alt', 7);
+             INSERT INTO skills (user_id, name, description, content, updated_at)
+                 VALUES (6, 'report', 'd', 'old', '2026-01-01'),
+                        (7, 'report', 'd', 'new', '2026-02-01'),
+                        (7, 'lookup', 'd', 'x', '2026-01-01');
+             INSERT INTO jobs (name, target, schedule, prompt, next_run, user_id)
+                 VALUES ('j', 'discord:1', NULL, 'p', 1, 6);
+             INSERT INTO messages (conversation_id, role, content, user_id)
+                 VALUES (1, 'user', '{}', 6), (1, 'user', '{}', NULL);",
+        )
+        .expect("seed");
+        migrations.to_latest(&mut conn).expect("migrate");
+        let strings = |sql: &str| {
+            let mut stmt = conn.prepare(sql).expect("prepare");
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .expect("query")
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .expect("rows")
+        };
+        assert_eq!(
+            strings("SELECT content FROM memories ORDER BY id"),
+            ["mine", "alt"]
         );
-        assert_eq!(db.skills(6).await.expect("load").len(), 1);
-        assert_eq!(db.skills(7).await.expect("load").len(), 1);
+        assert_eq!(
+            strings("SELECT name || '=' || content FROM skills ORDER BY name"),
+            ["lookup=x", "report=new"],
+            "the newest of a name is kept"
+        );
+        assert_eq!(strings("SELECT name FROM jobs"), ["j"]);
+        assert_eq!(
+            strings("SELECT ifnull(CAST(from_turn AS TEXT), 'none') FROM messages ORDER BY id"),
+            ["1", "none"]
+        );
     }
 
     #[tokio::test]
@@ -814,17 +795,16 @@ mod tests {
         };
         let db = Db::open_in_memory().expect("open");
         let later = db
-            .add_job("discord:1".to_owned(), 7, job("a", Some("0 9 * * *"), 20))
+            .add_job("discord:1".to_owned(), job("a", Some("0 9 * * *"), 20))
             .await
             .expect("add");
         let sooner = db
-            .add_job("discord:1".to_owned(), 6, job("b", None, 10))
+            .add_job("discord:1".to_owned(), job("b", None, 10))
             .await
             .expect("add");
         let ids = |jobs: Vec<Job>| jobs.into_iter().map(|j| j.id).collect::<Vec<_>>();
         let jobs = db.jobs().await.expect("load");
         assert_eq!(jobs[0].name, "b");
-        assert_eq!((jobs[0].user, jobs[1].user), (6, 7));
         assert_eq!(ids(jobs), [sooner, later]);
         db.set_next_run(later, 5).await.expect("update");
         assert_eq!(ids(db.jobs().await.expect("load")), [later, sooner]);
@@ -888,7 +868,7 @@ mod tests {
             json!({"role": "user", "content": "old"}),
             json!({"role": "assistant", "content": "reply"}),
         ];
-        db.append(id, Some(7), old).await.expect("append");
+        db.append(id, old).await.expect("append");
         let summary = vec![json!({"role": "user", "content": "summary"})];
         db.rewrite(id, summary.clone()).await.expect("rewrite");
         let live: Vec<Value> = db
@@ -918,7 +898,7 @@ mod tests {
             json!({"role": "user", "content": "ok"}),
             json!({"role": "system", "content": "not allowed"}),
         ];
-        assert!(db.append(id, Some(7), turn).await.is_err());
+        assert!(db.append(id, turn).await.is_err());
         assert!(db.messages(id).await.expect("load").is_empty());
     }
 }

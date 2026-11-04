@@ -1,5 +1,5 @@
-//! Long-term memory: short facts the agent saves itself, one set per Discord user, shared by all of
-//! that person's conversations and loaded before every turn.
+//! Long-term memory: short facts the agent saves itself about its owner, shared by every
+//! conversation and loaded before every turn.
 
 use serde_json::{Value, json};
 
@@ -7,16 +7,15 @@ use rig_core::completion::ToolDefinition;
 
 use crate::db::{Hit, Memory};
 
-/// Total characters across one person's entries; everything here rides along in every request.
+/// Total characters across all entries; everything here rides along in every request.
 // ponytail: fixed budget; make it configurable if people hit it.
 pub const CHAR_LIMIT: usize = 5_000;
 
 /// Stable guidance for the system prompt; the entries themselves come from `snapshot`.
 pub const GUIDANCE: &str = "\
 # Memory
-You have long-term memory about the person sending the current message, shared by all of their \
-conversations; each person has their own, and others never see it. It is reloaded before \
-every message. \
+You have long-term memory about the user, shared by all of your conversations with them. It is \
+reloaded before every message. \
 Save with the memory tool facts that matter from now on: who you are talking to, their \
 preferences, names or roles they give you, stable facts about this machine, standing conventions. \
 When the user asks you to remember something, or tells you such a fact, call the memory tool in \
@@ -41,8 +40,8 @@ pub fn tool() -> ToolDefinition {
     ToolDefinition {
         name: "memory".to_owned(),
         description: format!(
-            "Add, replace, or remove a long-term memory entry about the person sending the current message, \
-             shared by all of their conversations. Entries \
+            "Add, replace, or remove a long-term memory entry about the user, shared by all of your \
+             conversations with them. Entries \
              load before every message, so keep them short and high-signal. Total budget: {CHAR_LIMIT} characters."
         ),
         parameters: json!({
@@ -71,8 +70,8 @@ pub fn history_tool() -> ToolDefinition {
     ToolDefinition {
         name: "search_history".to_owned(),
         description: "Search messages that are not in your context: earlier ones of this \
-                      conversation that a summary replaced, and the user's other conversations \
-                      with you (other threads, DMs, voice calls, scheduled runs). Use it when the \
+                      conversation that a summary replaced, and your other conversations with \
+                      the user (other threads, DMs, voice calls, scheduled runs). Use it when the \
                       user refers to something from before that you cannot see. Finds messages \
                       containing every word of `query` (any language, ASCII case ignored), newest \
                       first. Covers what the user and you wrote, not tool output."

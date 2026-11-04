@@ -141,7 +141,7 @@ fn future_time(name: &str, text: &str, now: DateTime<Tz>) -> Result<i64, String>
 }
 
 /// A one-off copy of `job` due at `now`: the scheduler runs it on its next tick, in the job's
-/// conversation with its creator's memory, then deletes it, leaving the original untouched.
+/// conversation, then deletes it, leaving the original untouched.
 pub fn trial(job: &Job, now: i64) -> NewJob {
     NewJob {
         name: format!("{} (trial)", job.name),
@@ -368,7 +368,6 @@ mod tests {
     fn prompt_offers_silence() {
         let job = Job {
             id: 3,
-            user: 7,
             target: "discord:1".to_owned(),
             name: "Watch CI".to_owned(),
             prompt: "check PR #12".to_owned(),
@@ -432,7 +431,6 @@ mod tests {
             name: "News".to_owned(),
             target: "discord:1".to_owned(),
             schedule: Some("0 9 * * *".to_owned()),
-            user: 7,
             prompt: "old".to_owned(),
             next_run: 42,
         };
@@ -447,7 +445,7 @@ mod tests {
         assert_eq!(once.prompt, "old");
         assert_eq!(once.schedule, None);
         assert_eq!(once.next_run, at("2026-10-02 10:15").timestamp());
-        assert_eq!((once.id, once.user), (1, 7));
+        assert_eq!(once.id, 1);
 
         assert!(
             revise(&job, &json!({"id": 1}), now).is_err(),
@@ -468,7 +466,6 @@ mod tests {
             name: name.to_owned(),
             target: "discord:1".to_owned(),
             schedule: None,
-            user: 7,
             prompt: "p".to_owned(),
             next_run: 0,
         };

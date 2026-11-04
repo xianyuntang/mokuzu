@@ -105,15 +105,15 @@ message starts with `/cast <request>`.
 
 ### `memory`
 
-Long-term notes about the person talking.
+Long-term notes about you.
 
-- Each Discord user has their own entries, shared by all their threads, DMs, voice calls, and
-  scheduled runs. Other people never see them.
+- One set of entries, shared by all threads, DMs, voice calls, and scheduled runs, whichever of
+  your listed Discord accounts you write from.
 - All entries are put in the system prompt before every message, so a note saved in one
   conversation shows up in all of them on the next message.
 - Actions: `add`, `replace`, and `remove`. Replace and remove find the entry by a short piece of
   its text that matches exactly one entry.
-- One person's entries total at most 5,000 characters. When full, the model merges or replaces
+- Entries total at most 5,000 characters. When full, the model merges or replaces
   stale entries.
 - The model saves who you are, your preferences, names and roles, stable facts about the machine,
   and standing conventions. It skips task progress and things that go stale within a week.
@@ -125,20 +125,19 @@ Searches messages that are no longer in the model's context:
 
 - earlier messages of the same conversation, after a summary replaced them (see
   [Long conversations](#long-conversations)), and
-- your own messages, and the replies to them, in your other conversations: threads, DMs, voice
-  calls, and scheduled runs.
+- messages, and the replies to them, in other conversations: threads, DMs, voice calls, and
+  scheduled runs.
 
 It finds messages that contain every word of the query, in any language (Chinese and Japanese
 need no word splitting; ASCII case is ignored), newest first. It returns 10 hits of up to 500
-characters each. It matches what you and the model wrote, not tool output, and never other
-people's messages. Messages saved before 0.5.32 are found only in their own conversation.
+characters each. It matches what you and the model wrote, not tool output. Messages saved before 0.5.32 are found only in their own conversation.
 
 ### `skill`
 
-Skills are saved instructions for recurring tasks, kept in the database, one set per person like
-memory.
+Skills are saved instructions for recurring tasks, kept in the database and shared by every
+conversation, like memory.
 
-- Every conversation's system prompt lists that person's skill names and descriptions. The model
+- Every conversation's system prompt lists the skill names and descriptions. The model
   `load`s one when a task comes close to it.
 - The model `save`s a finished multi-step task that is likely to come up again, and saves a fixed
   version under the same name when following a skill went wrong or you corrected it. Saving runs
@@ -158,7 +157,7 @@ Scheduled jobs: a named prompt that runs on its own later. Discord only; jobs ru
 - Times are in the config's `timezone`. Restart `mokuzu serve` after changing it.
 - The scheduler checks for due jobs every 30 seconds. A run missed while mokuzu was down happens
   once on startup.
-- Each run starts a fresh conversation with no history, with the job creator's memory and skills,
+- Each run starts a fresh conversation with no history, with your memory and skills,
   and posts its reply in the channel or thread where the job was made. So the prompt must be
   self-contained.
 - Nobody watches a run live: approval prompts are denied unless approval is set to auto.

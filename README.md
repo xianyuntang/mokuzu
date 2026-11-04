@@ -26,10 +26,10 @@ past a reviewer model in auto mode.
 ## Features
 
 - **Discord-native**: DMs, server channels, a thread per conversation, slash commands, approval
-  buttons, and a separate allow list for each server.
+  buttons, and an allow list so it answers only you.
 - **Voice chat**: talk with it in a Discord voice channel through OpenAI's Realtime API; voice
   messages are transcribed.
-- **Memory per person**: notes and skills for each user, plus search over past
+- **Memory**: notes and skills about you, shared by every conversation, plus search over past
   conversations, in any language including Chinese and Japanese.
 - **Tools**: web search (SearXNG or Brave), web pages, PDF, Word, and PowerPoint files, and any
   [MCP](https://modelcontextprotocol.io) server.
@@ -47,8 +47,8 @@ past a reviewer model in auto mode.
 
 If you want a personal AI agent like OpenClaw but would rather not give a model a shell on your
 machine, mokuzu takes the other road: it reads freely, writes only to its own workspace, and asks
-before anything else. It is built for Discord first, so a whole server can share one bot while
-each person keeps their own memory, and you can talk with it in a voice channel.
+before anything else. It is built for Discord first: one bot that is yours alone, in DMs,
+server threads, and voice channels.
 
 The name comes from the Japanese name for the mitten crab, whose hairy claws look like they hold
 a tuft of seaweed scraps.
@@ -173,7 +173,8 @@ How it behaves:
   and database (`mokuzu --config <path> serve`), so nothing of yours is shared.
 - A message in a server channel opens a thread, and each thread is its own conversation.
   Idle threads archive after an hour.
-- Each person has their own memory, shared by all of their threads, DMs, and voice calls.
+- Memory and skills are one set, shared by all threads, DMs, voice calls, and scheduled runs,
+  whichever of your listed accounts you write from.
   Messages from different people are never merged into one turn.
 - 👀 means received, ✅ done, ❌ failed. `/cast <request>` sends out a cast of crabs, `/browser` gives a link to a live view of mokuzu's desktop, and `/stop` cuts short what mokuzu is doing in that conversation (💤 if nothing is running). They show up in Discord's `/` menu, and typing them as text works too.
 - Messages sent in quick succession, or while mokuzu is still answering, are merged and answered
@@ -237,9 +238,9 @@ Logs:
 | `send_file` | Sends a local file or a downloaded one (under 3 MB) as an attachment, e.g. an image the user asked to see. Same path and address rules as `read_file` and `fetch_url`. | No |
 | `web_search` | Searches through your SearXNG instance or the Brave Search API (pick one in `mokuzu configure`), optionally only recent results (`time_range`), news sites (`category`), or a date span (`after`, `before`; on SearXNG only Google engines honor it). Results show their publish date when known. | No |
 | `cast_crabs` | Cast of crabs mode (a group of crabs is a cast, and mokuzu is a mitten crab), modeled on Kimi's Agent Swarm and used when the model judges a task big enough, or whenever a message starts with `/cast <request>`. The model acts as an orchestrator and dispatches up to 10 named crabs per call, each with its own role and task, all running at once, while a live board shows what each one is doing. Crabs use only the read-only tools above, plus tools of MCP servers set to `approve = false`, and report back; the model sends more waves as needed and writes the answer. Needs web search configured. | No |
-| `memory` | Saves short notes about the person talking, loaded into their later conversations. | No |
-| `search_history` | Searches messages that are no longer in context: earlier ones of the same conversation that a summary replaced, and the person's own messages and the replies to them in their other conversations (threads, DMs, voice calls, scheduled runs). Other people's messages stay out of it. Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. Messages saved before 0.5.32 are found only in their own conversation. | No |
-| `skill` | Loads, saves, or removes skills: saved instructions for recurring tasks, kept in the database, one set per person like memory. Their names and descriptions are listed in each of that person's conversations; the model loads one when a task comes close to one, saves a finished multi-step task as a new one, and updates a skill when following it went wrong or you corrected it. Saving runs without asking and says what it saved. | Remove |
+| `memory` | Saves short notes about you, loaded into every later conversation. | No |
+| `search_history` | Searches messages that are no longer in context: earlier ones of the same conversation that a summary replaced, and messages and replies in other conversations (threads, DMs, voice calls, scheduled runs). Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. Messages saved before 0.5.32 are found only in their own conversation. | No |
+| `skill` | Loads, saves, or removes skills: saved instructions for recurring tasks, kept in the database and shared by every conversation, like memory. Their names and descriptions are listed in every conversation; the model loads one when a task comes close to one, saves a finished multi-step task as a new one, and updates a skill when following it went wrong or you corrected it. Saving runs without asking and says what it saved. | Remove |
 | `manual` | Searches this README and [docs/tools.md](docs/tools.md), built into the binary, so mokuzu can explain how its own features work (cron jobs, memory, approval, setup) from the docs instead of guessing. | No |
 | `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). To watch for something, ask for a repeating job that checks it: a run that replies exactly `NO_REPLY` posts nothing, so it speaks only once the thing happens, then removes its own job. | No |
 | `webhook` | With `[webhook]` set, makes a named webhook: a secret URL, `http://<this machine>:<port>/hook/<secret>`, that outside services POST to. Each request runs the webhook's instructions with the request body (up to 64 KB, given to the model as untrusted data) in a fresh conversation, and posts the reply where the webhook was made. Requests to one webhook run one at a time. Approval prompts during a run are denied, even in auto mode. The port is on your local network; put a tunnel in front of it for services on the internet. Discord only. | No |

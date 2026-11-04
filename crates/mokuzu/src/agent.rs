@@ -339,11 +339,10 @@ When the obvious interpretation is clear, act; ask only when the ambiguity chang
 /// only changes the tail. Rebuilt before every turn, so memory saved in any conversation shows up
 /// on the next message everywhere; the text only changes when memory or settings do.
 /// Web search guidance is added when that tool is configured.
-/// `user` picks whose memory and skills load.
-async fn system_prompt(db: &Db, config: &Config, user: u64) -> Result<String> {
+async fn system_prompt(db: &Db, config: &Config) -> Result<String> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
-    let memories = db.memories(user).await.context("failed to load memory")?;
-    let skills = db.skills(user).await.context("failed to load skills")?;
+    let memories = db.memories().await.context("failed to load memory")?;
+    let skills = db.skills().await.context("failed to load skills")?;
     let tools = if config.search.is_some() {
         format!("{}\n\n{}\n\n", search::GUIDANCE, swarm::GUIDANCE)
     } else {
@@ -481,12 +480,10 @@ pub struct Agent {
     /// Shared by every conversation in the process.
     mcp: Arc<Mcp>,
     key: String,
-    /// Discord user ID of who sent the current turn; picks the memory. Set by `run_turn`.
-    user: u64,
     /// Conversation key this conversation's output goes to, where jobs made in it post: `key`,
     /// unless it posts somewhere else (a job or webhook run).
     posts_to: String,
-    /// Rebuilt by `run_turn` for its sender.
+    /// Rebuilt by `run_turn`.
     system: String,
     messages: Vec<Message>,
     /// Ends the running turn early; shared with whoever can stop it.
@@ -523,7 +520,6 @@ impl Agent {
             mcp,
             key: key.to_owned(),
             posts_to: key.to_owned(),
-            user: 0,
             system: String::new(),
             messages,
             stop: Arc::default(),
@@ -548,13 +544,13 @@ impl Agent {
 
     /// Validates and applies one memory tool call; problems go back to the model as text.
     async fn remember(&self, args: &Value, io: &mut impl Io) -> Result<String> {
-        let entries = self.db.memories(self.user).await?;
+        let entries = self.db.memories().await?;
         let (edit, used) = match memory::plan(&entries, args) {
             Ok(planned) => planned,
             Err(problem) => return Ok(format!("error: {problem}")),
         };
         let note = memory::describe(&edit, &entries);
-        self.db.save_memory(self.user, edit).await?;
+        self.db.save_memory(edit).await?;
         io.note(&note).await?;
         Ok(format!(
             "saved; memory uses {used}/{} characters. Every conversation with this person sees it from its next message.",
@@ -571,7 +567,7 @@ impl Agent {
             .await?;
         let hits = self
             .db
-            .search(self.conversation_id, self.user, terms, memory::HISTORY_HITS)
+            .search(self.conversation_id, terms, memory::HISTORY_HITS)
             .await?;
         Ok(memory::render_hits(&hits))
     }
@@ -583,7 +579,7 @@ impl Agent {
             Ok(name) => name,
             Err(problem) => return Ok(format!("error: {problem}")),
         };
-        let skills = self.db.skills(self.user).await?;
+        let skills = self.db.skills().await?;
         let existing = skills.iter().find(|s| s.name == name);
         match args["action"].as_str() {
             Some("load") => {
@@ -601,7 +597,7 @@ impl Agent {
                 };
                 io.note(&format!("📘 {verb} skill `{name}`: {}", new.description))
                     .await?;
-                self.db.save_skill(self.user, new).await?;
+                self.db.save_skill(new).await?;
                 Ok(format!(
                     "{verb} skill {name}; it is listed from the next message"
                 ))
@@ -613,7 +609,7 @@ impl Agent {
                 if !io.confirm(&format!("remove skill `{name}`")).await? {
                     return Ok("error: the user denied removing this skill".to_owned());
                 }
-                self.db.remove_skill(self.user, name.clone()).await?;
+                self.db.remove_skill(name.clone()).await?;
                 io.ran("removed", true).await?;
                 Ok(format!("removed skill {name}"))
             }
@@ -648,7 +644,6 @@ impl Agent {
                     .db
                     .add_hook(
                         self.key.clone(),
-                        self.user,
                         name.to_owned(),
                         prompt.to_owned(),
                         secret.clone(),
@@ -658,7 +653,6 @@ impl Agent {
                     id,
                     name: name.to_owned(),
                     target: self.key.clone(),
-                    user: self.user,
                     prompt: prompt.to_owned(),
                     secret,
                 };
@@ -704,10 +698,7 @@ impl Agent {
                 let when = cron::when(job.schedule.as_deref(), job.next_run, zone);
                 let name = job.name.clone();
                 let prompt = quote(&job.prompt);
-                let id = self
-                    .db
-                    .add_job(self.posts_to.clone(), self.user, job)
-                    .await?;
+                let id = self.db.add_job(self.posts_to.clone(), job).await?;
                 let note = format!("⏰ scheduled #{id} {name} ({when})\n{prompt}");
                 // A full message, not a note: notes show one line, and the user should see the
                 // instructions the job will run with.
@@ -742,7 +733,7 @@ impl Agent {
                     Err(problem) => return Ok(format!("error: {problem}")),
                 };
                 let trial = cron::trial(job, chrono::Utc::now().timestamp());
-                let id = self.db.add_job(job.target.clone(), job.user, trial).await?;
+                let id = self.db.add_job(job.target.clone(), trial).await?;
                 let note = format!(
                     "⏰ trial run of #{} {} starts within a minute as #{id}; its reply posts where \
                      the job was made",
@@ -869,13 +860,11 @@ impl Agent {
     /// Runs one user turn to completion, looping while the model calls tools, then saves it.
     /// On failure the turn is cut back to its last complete tool round so the history stays valid;
     /// rounds whose commands already ran are kept, so the model knows what changed.
-    /// `images` go to the model alongside `prompt`. `user` sent it, as a Discord user ID; their
-    /// memory is the one loaded and edited.
+    /// `images` go to the model alongside `prompt`.
     pub async fn run_turn(
         &mut self,
         prompt: &str,
         images: Vec<Image>,
-        user: u64,
         io: &mut impl Io,
     ) -> Result<()> {
         if prompt.trim() == browser::BROWSER_COMMAND {
@@ -905,8 +894,7 @@ impl Agent {
             None => prompt,
         };
         self.reload()?;
-        self.user = user;
-        self.system = system_prompt(&self.db, &self.config, user).await?;
+        self.system = system_prompt(&self.db, &self.config).await?;
         self.compact_if_needed(prompt, io).await?;
         let turn_start = self.messages.len();
         let stop = Arc::clone(&self.stop);
@@ -942,7 +930,7 @@ impl Agent {
             .map(serde_json::to_value)
             .collect::<Result<Vec<Value>, _>>()?;
         self.db
-            .append(self.conversation_id, Some(user), turn)
+            .append(self.conversation_id, turn)
             .await
             .context("failed to save the conversation")?;
         result
@@ -1436,13 +1424,13 @@ mod tests {
         );
         let mut io = Print::default();
         agent
-            .run_turn(&prompt, Vec::new(), 1, &mut io)
+            .run_turn(&prompt, Vec::new(), &mut io)
             .await
             .expect("first turn");
         assert!(io.0.join("\n").to_ascii_lowercase().contains("pelican"));
         io.0.clear();
         agent
-            .run_turn("Spell it backwards.", Vec::new(), 1, &mut io)
+            .run_turn("Spell it backwards.", Vec::new(), &mut io)
             .await
             .expect("second turn");
         assert!(io.0.join("\n").to_ascii_lowercase().contains("nacilep"));

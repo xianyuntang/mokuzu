@@ -71,8 +71,6 @@ enum Input {
         attachments: Vec<Attachment>,
         origin: ChannelId,
         message: MessageId,
-        /// Discord user who sent it; their memory is the one the turn uses.
-        author: u64,
         /// Set for a voice call's request: gets what the turn said, so the call can read it out.
         reply: Option<oneshot::Sender<String>>,
     },
@@ -252,7 +250,7 @@ async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Jo
         agent.reset().await?;
         agent.posts_to(&job.target);
         agent
-            .run_turn(&cron::prompt(&job), Vec::new(), job.user, &mut quiet)
+            .run_turn(&cron::prompt(&job), Vec::new(), &mut quiet)
             .await?;
         quiet.finish().await
     };
@@ -322,12 +320,7 @@ async fn run_hook(
         agent.posts_to(&hook.target);
         agent.ask_for_every_action();
         agent
-            .run_turn(
-                &webhook::prompt(&hook, &body),
-                Vec::new(),
-                hook.user,
-                &mut io,
-            )
+            .run_turn(&webhook::prompt(&hook, &body), Vec::new(), &mut io)
             .await
     };
     if let Err(err) = run.await {
@@ -486,7 +479,7 @@ impl Handler {
             }
             calls.insert(guild, Arc::clone(&stop));
         }
-        let ask = self.ask(http, text_channel, author);
+        let ask = self.ask(http, text_channel);
         let (songbird, section, http, calls, db) = (
             Arc::clone(songbird),
             section.clone(),
@@ -496,7 +489,7 @@ impl Handler {
         );
         tokio::spawn(async move {
             // Loaded once per call, so the realtime model knows who it is talking to.
-            let memory = match db.memories(author).await {
+            let memory = match db.memories().await {
                 Ok(entries) => entries.into_iter().map(|entry| entry.content).collect(),
                 Err(err) => {
                     tracing::warn!("voice call goes without memory: {err:#}");
@@ -537,9 +530,9 @@ impl Handler {
         ))
     }
 
-    /// `ask_mokuzu` for a call: posts the request in `channel` and runs it as `author`'s turn
-    /// there, returning what the turn said.
-    fn ask(&self, http: &Arc<Http>, channel: ChannelId, author: u64) -> voice::Ask {
+    /// `ask_mokuzu` for a call: posts the request in `channel` and runs it as a turn there,
+    /// returning what the turn said.
+    fn ask(&self, http: &Arc<Http>, channel: ChannelId) -> voice::Ask {
         let (inboxes, http) = (Arc::clone(&self.inboxes), Arc::clone(http));
         Arc::new(move |request: String| {
             let (inboxes, http) = (Arc::clone(&inboxes), Arc::clone(&http));
@@ -554,7 +547,6 @@ impl Handler {
                     attachments: Vec::new(),
                     origin: channel,
                     message,
-                    author,
                     reply: Some(reply),
                 };
                 inboxes.deliver(&http, channel, input);
@@ -605,7 +597,6 @@ impl Handler {
             attachments,
             origin: msg.channel_id,
             message: msg.id,
-            author,
             reply: None,
         };
         self.deliver(&ctx.http, channel, input);
@@ -908,29 +899,21 @@ async fn run_channel(
                 None => break,
             },
         };
-        let (mut content, mut attachments, origin, message, author, reply) = match input {
+        let (mut content, mut attachments, origin, message, reply) = match input {
             Input::Text {
                 content,
                 attachments,
                 origin,
                 message,
-                author,
                 reply,
-                ..
-            } => (content, attachments, origin, message, author, reply),
+            } => (content, attachments, origin, message, reply),
             Input::Decision { .. } => continue, // A click on an approval that already timed out.
         };
         let mut messages = vec![(origin, message)];
         // A call's request is answered on its own, so its reply holds only its answer.
         if reply.is_none() {
-            next = merge_waiting(
-                &mut io.inbox,
-                author,
-                &mut content,
-                &mut attachments,
-                &mut messages,
-            )
-            .await;
+            next =
+                merge_waiting(&mut io.inbox, &mut content, &mut attachments, &mut messages).await;
         }
         io.reply = reply.map(|reply| (reply, String::new()));
         let prompt = content.trim();
@@ -943,7 +926,7 @@ async fn run_channel(
         let result = match download(&io.web, &attachments, voice.as_ref()).await {
             Ok((text, images)) => {
                 let prompt = format!("{prompt}{text}");
-                agent.run_turn(prompt.trim(), images, author, &mut io).await
+                agent.run_turn(prompt.trim(), images, &mut io).await
             }
             Err(err) => Err(err),
         };
@@ -973,11 +956,10 @@ async fn run_channel(
 
 /// Folds text messages into one prompt until `inbox` stays quiet for `MERGE_QUIET` or `MERGE_CAP`
 /// passes, so a burst,
-/// or messages sent while a turn ran, is answered once. Stops at a message from someone other
-/// than `author`, which is returned to handle after this prompt.
+/// or messages sent while a turn ran, is answered once. Stops at a voice call's request, which is
+/// returned to handle after this prompt.
 async fn merge_waiting(
     inbox: &mut mpsc::UnboundedReceiver<Input>,
-    author: u64,
     content: &mut String,
     attachments: &mut Vec<Attachment>,
     messages: &mut Vec<(ChannelId, MessageId)>,
@@ -993,20 +975,18 @@ async fn merge_waiting(
             attachments: more_attachments,
             origin,
             message,
-            author: sender,
             reply,
         } = input
         else {
             continue;
         };
-        // Each turn has one sender, so it loads one person's memory; a call's request goes alone.
-        if sender != author || reply.is_some() {
+        // A call's request goes alone, so its reply holds only its answer.
+        if reply.is_some() {
             return Some(Input::Text {
                 content: more,
                 attachments: more_attachments,
                 origin,
                 message,
-                author: sender,
                 reply,
             });
         }
@@ -1389,7 +1369,6 @@ mod tests {
             attachments: Vec::new(),
             origin: ChannelId::new(1),
             message: MessageId::new(id),
-            author: 7,
             reply: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1407,32 +1386,31 @@ mod tests {
         let mut content = "a".to_owned();
         let mut attachments = Vec::new();
         let mut messages = vec![(ChannelId::new(1), MessageId::new(1))];
-        let next = merge_waiting(&mut rx, 7, &mut content, &mut attachments, &mut messages).await;
+        let next = merge_waiting(&mut rx, &mut content, &mut attachments, &mut messages).await;
         assert_eq!(content, "a\nb\nc");
         assert_eq!(messages.len(), 3);
         assert!(next.is_none());
     }
 
     #[tokio::test]
-    async fn merge_waiting_stops_at_another_sender() {
+    async fn merge_waiting_stops_at_a_call_request() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        for (author, id) in [(7, 2), (8, 3)] {
+        for (id, call) in [(2, false), (3, true)] {
             let input = Input::Text {
                 content: "more".to_owned(),
                 attachments: Vec::new(),
                 origin: ChannelId::new(1),
                 message: MessageId::new(id),
-                author,
-                reply: None,
+                reply: call.then(|| oneshot::channel().0),
             };
             tx.send(input).unwrap();
         }
         drop(tx);
         let mut content = "a".to_owned();
         let mut messages = Vec::new();
-        let next = merge_waiting(&mut rx, 7, &mut content, &mut Vec::new(), &mut messages).await;
+        let next = merge_waiting(&mut rx, &mut content, &mut Vec::new(), &mut messages).await;
         assert_eq!(content, "a\nmore");
-        assert!(matches!(next, Some(Input::Text { author: 8, .. })));
+        assert!(matches!(next, Some(Input::Text { reply: Some(_), .. })));
     }
 
     #[tokio::test]
@@ -1445,7 +1423,6 @@ mod tests {
                     attachments: Vec::new(),
                     origin: ChannelId::new(1),
                     message: MessageId::new(id),
-                    author: 7,
                     reply: None,
                 };
                 if tx.send(input).is_err() {
@@ -1457,7 +1434,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let mut content = String::new();
         let mut messages = Vec::new();
-        merge_waiting(&mut rx, 7, &mut content, &mut Vec::new(), &mut messages).await;
+        merge_waiting(&mut rx, &mut content, &mut Vec::new(), &mut messages).await;
         assert!(start.elapsed() < MERGE_CAP + MERGE_QUIET / 2);
         assert!(messages.len() >= 2);
     }
