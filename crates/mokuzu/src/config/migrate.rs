@@ -12,12 +12,16 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
-const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] =
-    [spell_out_defaults, add_browser, built_in_browser];
+const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [
+    spell_out_defaults,
+    add_browser,
+    built_in_browser,
+    drop_guilds,
+];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
 pub fn migrate(text: &str) -> Result<Option<String>> {
@@ -240,6 +244,15 @@ fn built_in_browser(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// 3 → 4: mokuzu is for its owner alone, so per-server rules (`[discord.guilds]`, with their
+/// `"*"` and `mention_only`) are dropped; `discord.allowed_users` is the one list everywhere.
+fn drop_guilds(doc: &mut DocumentMut) -> Result<()> {
+    if let Some(discord) = doc.get_mut("discord").and_then(Item::as_table_like_mut) {
+        discord.remove("guilds");
+    }
+    Ok(())
+}
+
 /// The table `name` in `parent`, created without a header of its own when missing.
 fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
     parent
@@ -284,7 +297,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 3",
+            "version = 4",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -368,6 +381,22 @@ mod tests {
             "not ours, kept: {new}"
         );
         assert!(new.contains("enabled = false"), "{new}");
+    }
+
+    #[test]
+    fn version_3_drops_per_server_rules() {
+        let old = "version = 3\n[discord]\ntoken = \"t\"\nallowed_users = [1]\n\n\
+                   # a server\n[discord.guilds.100]\nallowed_users = \"*\"\nmention_only = true\n\n\
+                   [log]\nlevel = \"warn\"\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(
+            !new.contains("guilds") && !new.contains("mention_only"),
+            "{new}"
+        );
+        assert!(
+            new.contains("allowed_users = [1]") && new.contains("[log]"),
+            "{new}"
+        );
     }
 
     #[test]

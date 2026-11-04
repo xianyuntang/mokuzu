@@ -167,17 +167,10 @@ Mokuzu can answer you in Discord, by DM or in any server channel it can read.
 
 How it behaves:
 
-- Only the user IDs you list are heard; everyone else is ignored.
-- Each server can have its own list instead, set under **Add server** on the Discord page of
-  `mokuzu configure`: the server ID, its user IDs (or `*` for everyone there), and whether it
-  replies to every message or only when @mentioned. In config, that is
-  `[discord.guilds.<server ID>]` with `allowed_users` (a list, or `"*"`) and `mention_only = true`.
-  Other servers and DMs use the main list. In a server open to everyone, only the main list can
-  approve actions, but anyone there can make the bot read files on this machine, so open a server
-  only if you trust everyone in it. With `mention_only`, messages in the bot's threads need a
-  mention too. Messages it skips in its threads, from anyone, are still saved to that thread's
-  conversation, marked as overheard chat to use as context and never as instructions. To copy a
-  server ID, right-click the server with Developer Mode on.
+- Mokuzu is a personal agent: only the user IDs you list are heard, and only they approve
+  actions; everyone else is ignored, in DMs and in every server. List just yourself (and your
+  other accounts, if any). For other people, run a separate mokuzu with its own config, bot,
+  and database (`mokuzu --config <path> serve`), so nothing of yours is shared.
 - A message in a server channel opens a thread, and each thread is its own conversation.
   Idle threads archive after an hour.
 - Each person has their own memory, shared by all of their threads, DMs, and voice calls.

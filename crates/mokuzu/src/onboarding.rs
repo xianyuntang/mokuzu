@@ -70,9 +70,6 @@ const STEP_SEARCH: usize = 3;
 const STEP_MCP: usize = 4;
 const STEP_ADVANCED: usize = 5;
 const NO: &str = "No";
-const YES: &str = "Yes";
-const EVERY_MESSAGE: &str = "Every message";
-const MENTIONED: &str = "Only when @mentioned";
 const STDIO: &str = "Local command (stdio)";
 const HTTP: &str = "Remote URL (HTTP)";
 const KEEP: &str = "Keep";
@@ -143,31 +140,26 @@ const APPROVAL: usize = 20;
 const REVIEWER: usize = 21;
 const TIMEZONE: usize = 22;
 const BRAVE_KEY: usize = 23;
-const GUILD_ADD: usize = 24;
-const GUILD_ID: usize = 25;
-const GUILD_USERS: usize = 26;
-const GUILD_REPLY: usize = 27;
-const SEARCH_RESULTS: usize = 28;
-const API: usize = 29;
-const BASE_URL: usize = 30;
-const MAX_TOKENS: usize = 31;
-const COMPACT_AT: usize = 32;
-const BROWSER_WIDTH: usize = 33;
-const BROWSER_HEIGHT: usize = 34;
-const VIEWER_PORT: usize = 35;
-const VOICE: usize = 36;
-const VOICE_KEY: usize = 37;
-const VOICE_LANGUAGE: usize = 38;
-const VOICE_CHANNELS: usize = 39;
-const VOICE_NAME: usize = 40;
-const VOICE_MODEL: usize = 41;
-const VOICE_URL: usize = 42;
-const WEBHOOK_PORT: usize = 43;
-const BROWSER: usize = 44;
-const BROWSER_APPROVE: usize = 45;
-/// First of the rows for already configured MCP servers, followed by the configured Discord
-/// servers' rows.
-const MCP_FIRST: usize = 46;
+const SEARCH_RESULTS: usize = 24;
+const API: usize = 25;
+const BASE_URL: usize = 26;
+const MAX_TOKENS: usize = 27;
+const COMPACT_AT: usize = 28;
+const BROWSER_WIDTH: usize = 29;
+const BROWSER_HEIGHT: usize = 30;
+const VIEWER_PORT: usize = 31;
+const VOICE: usize = 32;
+const VOICE_KEY: usize = 33;
+const VOICE_LANGUAGE: usize = 34;
+const VOICE_CHANNELS: usize = 35;
+const VOICE_NAME: usize = 36;
+const VOICE_MODEL: usize = 37;
+const VOICE_URL: usize = 38;
+const WEBHOOK_PORT: usize = 39;
+const BROWSER: usize = 40;
+const BROWSER_APPROVE: usize = 41;
+/// First of the rows for already configured MCP servers.
+const MCP_FIRST: usize = 42;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -201,8 +193,6 @@ struct Form {
     status: Line<'static>,
     /// Configured MCP servers, one Keep / Remove row each from `MCP_FIRST` on.
     mcp_names: Vec<String>,
-    /// Configured Discord servers, one Keep / Remove row each after the MCP rows.
-    guilds: Vec<(u64, config::GuildRule)>,
     /// API key and base URL of each provider not picked now, so switching providers never
     /// carries one provider's key over to another, and saving keeps both.
     keys: BTreeMap<Provider, (String, String)>,
@@ -427,25 +417,6 @@ impl Form {
                 .unwrap_or_default(),
         ));
         fields.push(field(
-            STEP_DISCORD,
-            "Add server",
-            Kind::Select(options(&[NO, YES])),
-            NO.to_owned(),
-        ));
-        fields.push(field(STEP_DISCORD, "Server ID", Kind::Text, String::new()));
-        fields.push(field(
-            STEP_DISCORD,
-            "Server user IDs",
-            Kind::Text,
-            String::new(),
-        ));
-        fields.push(field(
-            STEP_DISCORD,
-            "Reply to",
-            Kind::Select(options(&[EVERY_MESSAGE, MENTIONED])),
-            EVERY_MESSAGE.to_owned(),
-        ));
-        fields.push(field(
             STEP_SEARCH,
             "Results",
             Kind::Text,
@@ -600,30 +571,6 @@ impl Form {
                 KEEP.to_owned(),
             )
         }));
-        let guilds: Vec<(u64, config::GuildRule)> = discord
-            .map(|d| d.guilds.clone().into_iter().collect())
-            .unwrap_or_default();
-        fields.extend(guilds.iter().map(|(id, rule)| {
-            let reply = if rule.mention_only {
-                MENTIONED
-            } else {
-                EVERY_MESSAGE
-            };
-            let keep = format!(
-                "{KEEP} · {} · {}",
-                match &rule.allowed_users {
-                    config::Users::Everyone => "everyone".to_owned(),
-                    config::Users::Only(ids) => join_ids(ids),
-                },
-                reply.to_lowercase()
-            );
-            field(
-                STEP_DISCORD,
-                &id.to_string(),
-                Kind::Select(vec![keep.clone(), REMOVE.to_owned()]),
-                keep,
-            )
-        }));
         Ok(Self {
             fields,
             step: STEP_DISCORD,
@@ -632,7 +579,6 @@ impl Form {
             reveal: false,
             status: Line::default(),
             mcp_names,
-            guilds,
             keys: current
                 .map(|c| {
                     c.keys
@@ -650,11 +596,6 @@ impl Form {
         })
     }
 
-    /// Index of the first configured Discord server's row.
-    fn guild_first(&self) -> usize {
-        MCP_FIRST + self.mcp_names.len()
-    }
-
     fn shown(&self, i: usize) -> bool {
         let field = &self.fields[i];
         field.step == self.step
@@ -662,7 +603,6 @@ impl Form {
                 CUSTOM_MODEL => self.fields[MODEL].value == CUSTOM,
                 VOICE_KEY | VOICE_MODEL | VOICE_NAME | VOICE_URL | VOICE_CHANNELS
                 | VOICE_LANGUAGE => self.fields[VOICE].value == ENABLED,
-                GUILD_ID | GUILD_USERS | GUILD_REPLY => self.fields[GUILD_ADD].value == YES,
                 SEARCH_URL | SEARCH_USER | SEARCH_PASSWORD => self.fields[SEARCH].value == SEARXNG,
                 SEARCH_RESULTS => self.fields[SEARCH].value != DISABLED,
                 BRAVE_KEY => self.fields[SEARCH].value == BRAVE,
@@ -1096,42 +1036,7 @@ impl Form {
         Ok(DiscordAnswers {
             token: self.required(TOKEN)?,
             allowed_users: parse_user_ids(&self.value(USERS))?,
-            guilds: self.guild_answers()?,
         })
-    }
-
-    /// Configured servers not set to Remove, plus the one being added.
-    fn guild_answers(&self) -> std::result::Result<Vec<GuildAnswers>, String> {
-        let first = self.guild_first();
-        let mut guilds: Vec<GuildAnswers> = self
-            .guilds
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.fields[first + i].value != REMOVE)
-            .map(|(_, (id, rule))| GuildAnswers {
-                id: *id,
-                mention_only: rule.mention_only,
-                allowed_users: rule.allowed_users.clone(),
-            })
-            .collect();
-        if self.fields[GUILD_ADD].value != YES {
-            return Ok(guilds);
-        }
-        let id = parse_server_id(&self.required(GUILD_ID)?)?;
-        if guilds.iter().any(|g| g.id == id) {
-            return Err(format!(
-                "server {id} exists; set it to Remove to replace it"
-            ));
-        }
-        guilds.push(GuildAnswers {
-            id,
-            mention_only: self.fields[GUILD_REPLY].value == MENTIONED,
-            allowed_users: match self.value(GUILD_USERS).as_str() {
-                "*" => config::Users::Everyone,
-                ids => config::Users::Only(parse_user_ids(ids)?),
-            },
-        });
-        Ok(guilds)
     }
 
     fn search(&self) -> std::result::Result<Option<SearchAnswers>, String> {
@@ -1517,8 +1422,6 @@ impl Form {
                 KEY | CUSTOM_MODEL
                     | TOKEN
                     | USERS
-                    | GUILD_ID
-                    | GUILD_USERS
                     | SEARCH_URL
                     | BRAVE_KEY
                     | MCP_NAME
@@ -1535,8 +1438,6 @@ impl Form {
         }
         match i {
             USERS => parse_user_ids(&value).err(),
-            GUILD_ID => parse_server_id(&value).err(),
-            GUILD_USERS if value != "*" => parse_user_ids(&value).err(),
             VOICE_CHANNELS => parse_ids(&value, "channel").err(),
             TIMEZONE => self.timezone().err(),
             SEARCH_RESULTS => self.search_results().err(),
@@ -1559,8 +1460,6 @@ impl Form {
 /// Fields whose value is checked as it is typed, so a valid one gets a ✓.
 const CHECKED: &[usize] = &[
     USERS,
-    GUILD_ID,
-    GUILD_USERS,
     TIMEZONE,
     SEARCH_URL,
     MCP_URL,
@@ -1587,14 +1486,10 @@ fn help(i: usize) -> (&'static str, &'static str) {
              there too, or the bot cannot connect."
         }
         USERS => {
-            "Comma-separated Discord user IDs, used in DMs and in servers not added below. With \
-             Developer Mode on, right-click a name › Copy User ID."
+            "Your Discord user ID, the only one mokuzu answers and takes approvals from; \
+             comma-separate several for your other accounts. With Developer Mode on, \
+             right-click your name › Copy User ID."
         }
-        GUILD_ADD => {
-            "Give one server its own users and reply rule. Servers already added are listed \
-             below; set one to Remove to drop or replace it."
-        }
-        GUILD_ID => "With Developer Mode on, right-click the server › Copy Server ID.",
         VOICE => {
             "Lets /voice in a server start a voice call: mokuzu joins your voice channel and \
              talks through OpenAI's Realtime API, handing anything past small talk to the agent."
@@ -1608,8 +1503,6 @@ fn help(i: usize) -> (&'static str, &'static str) {
             "Comma-separated voice channel IDs mokuzu joins as soon as you do, without /voice; \
              blank for none. Right-click the channel › Copy Channel ID."
         }
-        GUILD_USERS => "Comma-separated user IDs, or * for everyone in the server.",
-        GUILD_REPLY => "Every message, or only messages that @mention the bot, in threads too.",
         SEARCH => "Gives the model a web_search tool through SearXNG or the Brave Search API.",
         SEARCH_URL => "Your SearXNG instance, starting with http:// or https://.",
         SEARCH_USER | SEARCH_PASSWORD => {
@@ -1675,10 +1568,6 @@ fn help(i: usize) -> (&'static str, &'static str) {
         _ => "Keep it, or Remove it.",
     };
     let warning = match i {
-        GUILD_USERS => {
-            "With *, anyone in the server can make the bot read files on this machine. Only the \
-             main list can approve actions."
-        }
         MCP_APPROVE => "Never ask lets the model call this server's tools on its own.",
         _ => "",
     };
@@ -1715,7 +1604,6 @@ fn dropdown_area(body: Rect, row: u16, items: u16) -> Rect {
 struct DiscordAnswers {
     token: String,
     allowed_users: Vec<u64>,
-    guilds: Vec<GuildAnswers>,
 }
 
 /// The `[voice]` section.
@@ -1726,13 +1614,6 @@ struct VoiceAnswers {
     voice: String,
     language: String,
     channels: Vec<u64>,
-}
-
-/// One `[discord.guilds.<id>]` table.
-struct GuildAnswers {
-    id: u64,
-    mention_only: bool,
-    allowed_users: config::Users,
 }
 
 fn join_ids(ids: &[u64]) -> String {
@@ -1752,11 +1633,6 @@ fn parse_ids(text: &str, what: &str) -> std::result::Result<Vec<u64>, String> {
                 .map_err(|_| format!("`{part}` is not a Discord {what} ID (digits only)"))
         })
         .collect()
-}
-
-fn parse_server_id(text: &str) -> std::result::Result<u64, String> {
-    text.parse::<u64>()
-        .map_err(|_| format!("`{text}` is not a Discord server ID (digits only)"))
 }
 
 fn parse_user_ids(text: &str) -> std::result::Result<Vec<u64>, String> {
@@ -1952,17 +1828,6 @@ fn render_toml(answers: &Answers) -> String {
         quote(&discord.token),
         join_ids(&discord.allowed_users)
     ));
-    for guild in &discord.guilds {
-        text.push_str(&format!(
-            "\n[discord.guilds.{}]\nallowed_users = {}\n",
-            guild.id,
-            match &guild.allowed_users {
-                config::Users::Everyone => quote("*"),
-                config::Users::Only(ids) => format!("[{}]", join_ids(ids)),
-            }
-        ));
-        text.push_str(&format!("mention_only = {}\n", guild.mention_only));
-    }
     if let Some(voice) = &answers.voice {
         text.push_str(&format!(
             "\n[voice]\napi_key = {}\nurl = {}\nmodel = {}\nvoice = {}\nlanguage = {}\n\
@@ -2062,18 +1927,6 @@ mod tests {
             discord: DiscordAnswers {
                 token: "tok".to_owned(),
                 allowed_users: vec![1, 22],
-                guilds: vec![
-                    GuildAnswers {
-                        id: 100,
-                        mention_only: true,
-                        allowed_users: config::Users::Only(vec![2, 3]),
-                    },
-                    GuildAnswers {
-                        id: 200,
-                        mention_only: false,
-                        allowed_users: config::Users::Everyone,
-                    },
-                ],
             },
             voice: Some(VoiceAnswers {
                 api_key: "sk-voice".to_owned(),
@@ -2133,8 +1986,7 @@ mod tests {
         assert_eq!(config.api_key.as_str(), "sk-\"quoted\"");
         let discord = config.discord.as_ref().expect("discord");
         assert_eq!(discord.allowed_users, [1, 22]);
-        assert!(discord.mention_only(Some(100)) && discord.can_talk(Some(100), 2));
-        assert_eq!(discord.guilds[&200].allowed_users, config::Users::Everyone);
+        assert!(discord.allows(22) && !discord.allows(2));
         let voice = config.voice.as_ref().expect("voice");
         assert_eq!(
             (voice.api_key.as_str(), voice.voice.as_str()),
@@ -2163,24 +2015,6 @@ mod tests {
         assert_eq!(reopened.value(VIEWER_PORT), "8765");
         assert_eq!(reopened.value(WEBHOOK_PORT), "22051");
         assert_eq!(reopened.model_options().expect("valid").max_tokens, 8000);
-        let first = reopened.guild_first();
-        assert_eq!(reopened.fields[first].label, "100");
-        assert_eq!(
-            reopened.fields[first].value,
-            "Keep · 2, 3 · only when @mentioned"
-        );
-        assert_eq!(
-            reopened.fields[first + 1].value,
-            "Keep · everyone · every message"
-        );
-        reopened.fields[first + 1].value = REMOVE.to_owned();
-        let kept = reopened.guild_answers().expect("valid");
-        assert_eq!(
-            kept.iter()
-                .map(|g| (g.id, g.mention_only, g.allowed_users.clone()))
-                .collect::<Vec<_>>(),
-            [(100, true, config::Users::Only(vec![2, 3]))]
-        );
         let Some(config::Search::Searxng(searxng)) = config.search else {
             panic!("search section");
         };
@@ -2210,7 +2044,6 @@ mod tests {
             discord: DiscordAnswers {
                 token: "t".to_owned(),
                 allowed_users: vec![1],
-                guilds: Vec::new(),
             },
             voice: None,
             search: Some(answers),
@@ -2369,26 +2202,15 @@ mod tests {
         form.fields[USERS].value = "12, x".to_owned();
         assert!(form.check_step(form.step).is_err());
         form.fields[USERS].value = "12, 34".to_owned();
-        assert!(!form.visible().contains(&GUILD_ID));
-        form.fields[GUILD_ADD].value = YES.to_owned();
-        assert!(form.visible().contains(&GUILD_REPLY));
-        assert!(form.check_step(form.step).is_err(), "server needs an ID");
+        form.fields[TOKEN].value = String::new();
         assert_eq!(
-            form.field_error(GUILD_ID),
+            form.field_error(TOKEN),
             None,
             "empty only counts after a save"
         );
         form.attempted = true;
-        assert!(form.field_error(GUILD_ID).is_some());
-        form.fields[GUILD_ID].value = "x".to_owned();
-        form.fields[GUILD_USERS].value = "12".to_owned();
-        assert!(form.field_error(GUILD_ID).is_some());
-        assert!(form.check_step(form.step).is_err(), "server ID is digits");
-        form.fields[GUILD_ID].value = "100".to_owned();
-        form.fields[GUILD_USERS].value = String::new();
-        assert!(form.check_step(form.step).is_err(), "server needs users");
-        form.fields[GUILD_USERS].value = "*".to_owned();
-        form.fields[GUILD_REPLY].value = MENTIONED.to_owned();
+        assert!(form.field_error(TOKEN).is_some());
+        form.fields[TOKEN].value = "t".to_owned();
         form.check_step(form.step).expect("discord step valid");
 
         form.step = STEP_VOICE;
@@ -2452,14 +2274,6 @@ mod tests {
         assert_eq!(answers.model, "qwen-next");
         let discord = answers.discord;
         assert_eq!(discord.allowed_users, [12, 34]);
-        assert_eq!(
-            discord
-                .guilds
-                .iter()
-                .map(|g| (g.id, g.mention_only, g.allowed_users.clone()))
-                .collect::<Vec<_>>(),
-            [(100, true, config::Users::Everyone)]
-        );
     }
 
     #[test]

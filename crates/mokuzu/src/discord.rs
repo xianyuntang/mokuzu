@@ -1,7 +1,6 @@
 //! Discord gateway: one agent per DM or thread. A message in a server text channel opens a new
 //! thread for its conversation. Memory is shared by every conversation. Only allow-listed
-//! users are heard, per server if `[discord.guilds]` says so, and they approve settings changes
-//! with buttons. With `[voice]` set, `/voice` or joining one of its `channels` starts a voice call
+//! users are heard, and they approve actions with buttons. With `[voice]` set, `/voice` or joining one of its `channels` starts a voice call
 //! (see `voice`).
 
 use std::collections::{HashMap, HashSet};
@@ -74,15 +73,11 @@ enum Input {
         message: MessageId,
         /// Discord user who sent it; their memory is the one the turn uses.
         author: u64,
-        /// Whether a typed `y` from them approves a waiting action.
-        can_approve: bool,
         /// Set for a voice call's request: gets what the turn said, so the call can read it out.
         reply: Option<oneshot::Sender<String>>,
     },
     /// A Run or Deny click on the approval message `message`.
     Decision { message: MessageId, run: bool },
-    /// A server message the bot skips, added to the history as context only. `who` wrote `text`.
-    Overheard { who: String, text: String },
 }
 
 /// Connects to Discord and serves DMs until the connection fails.
@@ -195,7 +190,6 @@ fn unattended_io(http: Arc<Http>, target: &str) -> Option<DiscordIo> {
         approval: None,
         status: None,
         board: None,
-        overheard: Vec::new(),
         reply: None,
     })
 }
@@ -492,7 +486,7 @@ impl Handler {
             }
             calls.insert(guild, Arc::clone(&stop));
         }
-        let ask = self.ask(http, text_channel, author, guild);
+        let ask = self.ask(http, text_channel, author);
         let (songbird, section, http, calls, db) = (
             Arc::clone(songbird),
             section.clone(),
@@ -545,9 +539,8 @@ impl Handler {
 
     /// `ask_mokuzu` for a call: posts the request in `channel` and runs it as `author`'s turn
     /// there, returning what the turn said.
-    fn ask(&self, http: &Arc<Http>, channel: ChannelId, author: u64, guild: GuildId) -> voice::Ask {
+    fn ask(&self, http: &Arc<Http>, channel: ChannelId, author: u64) -> voice::Ask {
         let (inboxes, http) = (Arc::clone(&self.inboxes), Arc::clone(http));
-        let can_approve = self.discord.can_approve(Some(guild.get()), author);
         Arc::new(move |request: String| {
             let (inboxes, http) = (Arc::clone(&inboxes), Arc::clone(&http));
             Box::pin(async move {
@@ -562,39 +555,12 @@ impl Handler {
                     origin: channel,
                     message,
                     author,
-                    can_approve,
                     reply: Some(reply),
                 };
                 inboxes.deliver(&http, channel, input);
                 said.await.context("mokuzu dropped the request")
             })
         })
-    }
-
-    /// Hands a skipped server message to its channel's history, if the bot has a conversation
-    /// there, so a later turn knows what was said. Other channels are left alone.
-    async fn overhear(&self, ctx: &Context, msg: Message) {
-        let text = msg.content.trim();
-        if msg.guild_id.is_none() || text.is_empty() {
-            return;
-        }
-        match self
-            .db
-            .has_conversation(&format!("discord:{}", msg.channel_id))
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => return,
-            Err(err) => {
-                tracing::warn!("failed to look up conversation: {err:#}");
-                return;
-            }
-        }
-        let input = Input::Overheard {
-            who: msg.author.display_name().to_owned(),
-            text: text.to_owned(),
-        };
-        self.deliver(&ctx.http, msg.channel_id, input);
     }
 
     /// `/stop` typed as text: stops the turn running in `msg`'s conversation.
@@ -640,9 +606,6 @@ impl Handler {
             origin: msg.channel_id,
             message: msg.id,
             author,
-            can_approve: self
-                .discord
-                .can_approve(msg.guild_id.map(|g| g.get()), author),
             reply: None,
         };
         self.deliver(&ctx.http, channel, input);
@@ -652,10 +615,7 @@ impl Handler {
     /// then treats that reply like the user's own message.
     async fn on_command(&self, ctx: &Context, command: &CommandInteraction) -> Result<()> {
         let author = command.user.id.get();
-        if !self
-            .discord
-            .can_talk(command.guild_id.map(|g| g.get()), author)
-        {
+        if !self.discord.allows(author) {
             let reply = CreateInteractionResponseMessage::new()
                 .content("You are not allowed to talk to this bot.")
                 .ephemeral(true);
@@ -700,10 +660,7 @@ impl Handler {
             DENY => false,
             _ => return Ok(()),
         };
-        if !self
-            .discord
-            .can_approve(click.guild_id.map(|g| g.get()), click.user.id.get())
-        {
+        if !self.discord.allows(click.user.id.get()) {
             let reply = CreateInteractionResponseMessage::new()
                 .content("You are not allowed to approve changes.")
                 .ephemeral(true);
@@ -738,20 +695,13 @@ impl Handler {
 #[async_trait]
 impl EventHandler for Handler {
     async fn message(&self, ctx: Context, msg: Message) {
-        let guild = msg.guild_id.map(|g| g.get());
         let author = msg.author.id.get();
-        if msg.author.bot {
+        if msg.author.bot || !self.discord.allows(author) {
             return;
         }
         let Some(&bot) = self.bot.get() else {
             return;
         };
-        if !self.discord.can_talk(guild, author)
-            || (self.discord.mention_only(guild) && !msg.mentions_user_id(bot))
-        {
-            self.overhear(&ctx, msg).await;
-            return;
-        }
         let content = strip_mention(&msg.content, bot);
         if content == STOP_COMMAND {
             self.stop(&ctx, &msg).await;
@@ -817,7 +767,7 @@ impl EventHandler for Handler {
         if !moved_in
             || !section.channels.contains(&channel.get())
             || self.bot.get() == Some(&new.user_id)
-            || !self.discord.can_talk(Some(guild.get()), author)
+            || !self.discord.allows(author)
             || lock(&self.calls).contains_key(&guild)
         {
             return;
@@ -946,7 +896,6 @@ async fn run_channel(
         approval: None,
         status: None,
         board: None,
-        overheard: Vec::new(),
         reply: None,
     };
     // Input that ended a merged burst, handled next on its own.
@@ -969,12 +918,6 @@ async fn run_channel(
                 reply,
                 ..
             } => (content, attachments, origin, message, author, reply),
-            Input::Overheard { who, text } => {
-                if let Err(err) = agent.overhear(&who, &text).await {
-                    tracing::warn!("{err:#}");
-                }
-                continue;
-            }
             Input::Decision { .. } => continue, // A click on an approval that already timed out.
         };
         let mut messages = vec![(origin, message)];
@@ -1005,12 +948,6 @@ async fn run_channel(
             Err(err) => Err(err),
         };
         drop(typing);
-        // Chat overheard while the turn waited for approval goes in after it.
-        for (who, text) in std::mem::take(&mut io.overheard) {
-            if let Err(err) = agent.overhear(&who, &text).await {
-                tracing::warn!("{err:#}");
-            }
-        }
         if let Err(err) = &result {
             tracing::warn!("turn failed: {err:#}");
             let text = if err.is::<Stopped>() {
@@ -1037,7 +974,7 @@ async fn run_channel(
 /// Folds text messages into one prompt until `inbox` stays quiet for `MERGE_QUIET` or `MERGE_CAP`
 /// passes, so a burst,
 /// or messages sent while a turn ran, is answered once. Stops at a message from someone other
-/// than `author` or at overheard chat, which is returned to handle after this prompt.
+/// than `author`, which is returned to handle after this prompt.
 async fn merge_waiting(
     inbox: &mut mpsc::UnboundedReceiver<Input>,
     author: u64,
@@ -1057,13 +994,9 @@ async fn merge_waiting(
             origin,
             message,
             author: sender,
-            can_approve,
             reply,
         } = input
         else {
-            if matches!(input, Input::Overheard { .. }) {
-                return Some(input);
-            }
             continue;
         };
         // Each turn has one sender, so it loads one person's memory; a call's request goes alone.
@@ -1074,7 +1007,6 @@ async fn merge_waiting(
                 origin,
                 message,
                 author: sender,
-                can_approve,
                 reply,
             });
         }
@@ -1097,8 +1029,6 @@ struct DiscordIo {
     status: Option<(MessageId, String)>,
     /// The live board message, edited in place until the board is let go.
     board: Option<MessageId>,
-    /// Chat overheard while a turn waits for approval, as `(who, text)`, added once it ends.
-    overheard: Vec<(String, String)>,
     /// A voice call's request this turn answers, and everything the turn has said so far.
     reply: Option<(oneshot::Sender<String>, String)>,
 }
@@ -1238,14 +1168,6 @@ impl Io for DiscordIo {
                 // The click handler already updated the message.
                 Ok(Some(Input::Decision { message: id, run })) if id == message => break run,
                 Ok(Some(Input::Decision { .. })) => {}
-                Ok(Some(Input::Overheard { who, text })) => self.overheard.push((who, text)),
-                // Someone who may not approve can't answer either; their message is dropped.
-                Ok(Some(Input::Text {
-                    origin,
-                    message: reply,
-                    can_approve: false,
-                    ..
-                })) => self.finish(origin, reply, false).await,
                 // Typing an answer still works; anything but `y` is a no.
                 Ok(Some(Input::Text {
                     content,
@@ -1468,7 +1390,6 @@ mod tests {
             origin: ChannelId::new(1),
             message: MessageId::new(id),
             author: 7,
-            can_approve: true,
             reply: None,
         };
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -1502,7 +1423,6 @@ mod tests {
                 origin: ChannelId::new(1),
                 message: MessageId::new(id),
                 author,
-                can_approve: true,
                 reply: None,
             };
             tx.send(input).unwrap();
@@ -1526,7 +1446,6 @@ mod tests {
                     origin: ChannelId::new(1),
                     message: MessageId::new(id),
                     author: 7,
-                    can_approve: true,
                     reply: None,
                 };
                 if tx.send(input).is_err() {

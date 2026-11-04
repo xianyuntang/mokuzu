@@ -473,82 +473,14 @@ impl VoiceSection {
 #[serde(deny_unknown_fields)]
 pub struct DiscordSection {
     pub token: Secret,
-    /// Discord user IDs allowed to talk to the bot in DMs and in servers not listed in `guilds`;
-    /// everyone else is ignored.
+    /// Discord user IDs the bot answers and takes approvals from; everyone else is ignored.
     pub allowed_users: Vec<u64>,
-    /// `[discord.guilds.<server ID>]`: rules for one server, used there instead of `allowed_users`.
-    #[serde(default)]
-    pub guilds: BTreeMap<u64, GuildRule>,
 }
 
 impl DiscordSection {
-    fn guild(&self, guild: Option<u64>) -> Option<&GuildRule> {
-        guild.and_then(|guild| self.guilds.get(&guild))
-    }
-
-    /// Whether `user` may talk to the bot in `guild` (`None` for DMs).
-    pub fn can_talk(&self, guild: Option<u64>, user: u64) -> bool {
-        match self.guild(guild).map(|rule| &rule.allowed_users) {
-            Some(Users::Everyone) => true,
-            Some(Users::Only(ids)) => ids.contains(&user),
-            None => self.allowed_users.contains(&user),
-        }
-    }
-
-    /// Whether `user` may approve actions in `guild`. In a server open to everyone, only the
-    /// main `allowed_users` may.
-    pub fn can_approve(&self, guild: Option<u64>, user: u64) -> bool {
-        match self.guild(guild).map(|rule| &rule.allowed_users) {
-            Some(Users::Only(ids)) => ids.contains(&user),
-            Some(Users::Everyone) | None => self.allowed_users.contains(&user),
-        }
-    }
-
-    /// Whether the bot answers only @mentions in `guild`.
-    pub fn mention_only(&self, guild: Option<u64>) -> bool {
-        self.guild(guild).is_some_and(|rule| rule.mention_only)
-    }
-}
-
-/// One server's rules for the Discord bot.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct GuildRule {
-    /// Who may talk to the bot in this server: user IDs, or `"*"` for everyone.
-    pub allowed_users: Users,
-    /// Answer only messages that @mention the bot, in its threads too.
-    pub mention_only: bool,
-}
-
-/// A server's `allowed_users`: a non-empty list of user IDs, or `"*"` for everyone.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "RawUsers")]
-pub enum Users {
-    Everyone,
-    Only(Vec<u64>),
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum RawUsers {
-    Ids(Vec<u64>),
-    Pattern(String),
-}
-
-impl TryFrom<RawUsers> for Users {
-    type Error = String;
-
-    fn try_from(raw: RawUsers) -> std::result::Result<Self, String> {
-        match raw {
-            RawUsers::Pattern(text) if text == "*" => Ok(Self::Everyone),
-            RawUsers::Pattern(text) => Err(format!(
-                "allowed_users is a list of user IDs or \"*\", not {text:?}"
-            )),
-            RawUsers::Ids(ids) if ids.is_empty() => {
-                Err("allowed_users is empty; list user IDs or use \"*\"".to_owned())
-            }
-            RawUsers::Ids(ids) => Ok(Self::Only(ids)),
-        }
+    /// Whether the bot listens to `user`.
+    pub fn allows(&self, user: u64) -> bool {
+        self.allowed_users.contains(&user)
     }
 }
 
@@ -1194,51 +1126,22 @@ mod tests {
     }
 
     #[test]
-    fn discord_guilds_override_allowed_users() {
+    fn discord_allows_only_listed_users() {
         let base =
             "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = [1]\n";
-        let config = Config::parse(&format!(
-            "{base}[discord.guilds.100]\nallowed_users = [2, 3]\nmention_only = true\n\
-             [discord.guilds.200]\nallowed_users = [1]\n"
-        ))
-        .expect("valid");
-        let discord = config.discord.expect("discord configured");
-        assert!(discord.can_talk(None, 1) && !discord.can_talk(None, 2));
-        assert!(discord.can_talk(Some(100), 2) && !discord.can_talk(Some(100), 1));
-        assert!(discord.can_approve(Some(100), 2) && !discord.can_approve(Some(100), 1));
-        assert!(discord.mention_only(Some(100)) && !discord.mention_only(Some(200)));
-        assert!(discord.can_talk(Some(300), 1) && !discord.mention_only(None));
-
-        let open = Config::parse(&format!(
-            "{base}[discord.guilds.100]\nallowed_users = \"*\"\n"
-        ))
-        .expect("valid")
-        .discord
-        .expect("discord configured");
-        assert!(open.can_talk(Some(100), 99), "everyone may talk");
-        assert!(
-            !open.can_approve(Some(100), 99),
-            "only the main list approves"
-        );
-        assert!(open.can_approve(Some(100), 1));
-        assert!(!open.can_talk(None, 99), "DMs keep the main list");
+        let discord = Config::parse(base)
+            .expect("valid")
+            .discord
+            .expect("discord configured");
+        assert!(discord.allows(1) && !discord.allows(2));
         assert!(
             Config::parse(&format!(
-                "{base}[discord.guilds.100]\nallowed_users = \"all\"\n"
+                "{base}[discord.guilds.100]\nallowed_users = [2]\n"
             ))
-            .is_err()
-        );
-        assert!(
-            Config::parse(&format!("{base}[discord.guilds.100]\nallowed_users = []\n")).is_err()
-        );
-        assert!(
-            Config::parse(&format!("{base}[discord.guilds.x]\nallowed_users = [1]\n")).is_err()
-        );
-        assert!(
-            Config::parse(&format!(
-                "{base}[discord.guilds.100]\nallowed_users = [1]\nmentoin = true\n"
-            ))
-            .is_err()
+            .expect("valid")
+            .discord
+            .is_some_and(|d| !d.allows(2)),
+            "per-server lists are gone"
         );
     }
 }

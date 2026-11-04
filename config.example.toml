@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 3
+version = 4
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -113,20 +113,11 @@ viewer_port = 22050
 # Required: the Discord bot mokuzu talks through, by DM and in server channels.
 [discord]
 token = "your-bot-token"
-# Only these Discord user IDs can talk to the bot (it can read files on this machine).
+# Your Discord user ID: mokuzu is a personal agent, so it answers and takes approvals only from
+# the IDs listed here (it can read files on this machine), and ignores everyone else.
 allowed_users = [123456789012345678]
-# The bot answers these users in DMs and in every server channel it can read, no @mention needed.
+# The bot answers you in DMs and in every server channel it can read, no @mention needed.
 # Enable the MESSAGE CONTENT intent for the bot in the Developer Portal, or it cannot connect.
-#
-# # Optional, per server (guild) ID: who may use the bot there, replacing allowed_users.
-# # Servers not listed use allowed_users and need no @mention.
-# [discord.guilds.111111111111111111]
-# allowed_users = [123456789012345678, 234567890123456789]
-# # Or "*" for everyone in the server. Only the main allowed_users can approve actions there, but
-# # anyone can make the bot read files on this machine.
-# # allowed_users = "*"
-# # Answer only messages that @mention the bot, in its threads too.
-# mention_only = true
 
 # Optional. Voice calls, and transcripts of voice messages and other audio you attach: send /voice in a server while you are in one of its voice
 # channels, and mokuzu joins it and talks with you through OpenAI's Realtime API. The realtime
