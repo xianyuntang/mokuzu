@@ -26,6 +26,7 @@ use crate::db::{self, Db};
 use crate::document;
 use crate::fetch::{self, Fetcher};
 use crate::files;
+use crate::manual;
 use crate::mcp::Mcp;
 use crate::memory;
 use crate::oauth;
@@ -445,6 +446,7 @@ pub(crate) fn request(
             memory::tool(),
             memory::history_tool(),
             skill::tool(),
+            manual::tool(),
             fetch::tool(),
             settings::tool(),
         ]
@@ -1169,6 +1171,7 @@ impl Agent {
                     "memory" => self.remember(&call.function.arguments, io).await?,
                     "search_history" => self.search_history(&call.function.arguments, io).await?,
                     "skill" => self.skill(&call.function.arguments, io).await?,
+                    "manual" => manual::search(&call.function.arguments),
                     "cron" if self.schedules() => self.cron(&call.function.arguments, io).await?,
                     "webhook" => match self.webhooks() {
                         Some(port) => self.webhook(port, &call.function.arguments, io).await?,

@@ -9,6 +9,7 @@ mod document;
 mod fetch;
 mod files;
 mod legacy;
+mod manual;
 mod mcp;
 mod memory;
 mod oauth;

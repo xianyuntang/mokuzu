@@ -232,6 +232,8 @@ Logs:
 
 ## Tools
 
+[docs/tools.md](docs/tools.md) explains each tool in detail.
+
 | Tool | What it does | Needs approval |
 | --- | --- | --- |
 | `read_file`, `list_dir` | Reads files, including the text of PDF, `.docx`, and `.pptx` documents up to 20 MB, and lists directories. Hidden paths (like `~/.ssh` or `.env`) and Mokuzu's own config and database are refused. | No |
@@ -245,6 +247,7 @@ Logs:
 | `memory` | Saves short notes about the person talking, loaded into their later conversations. | No |
 | `search_history` | Searches messages that are no longer in context: earlier ones of the same conversation that a summary replaced, and the person's own messages and the replies to them in their other conversations (threads, DMs, voice calls, scheduled runs). Other people's messages stay out of it. Matches what the user and the model wrote, not tool output; Chinese and Japanese work without word splitting. Messages saved before 0.5.32 are found only in their own conversation. | No |
 | `skill` | Loads, saves, or removes skills: saved instructions for recurring tasks, kept in the database, one set per person like memory. Their names and descriptions are listed in each of that person's conversations; the model loads one when a task comes close to one, saves a finished multi-step task as a new one, and updates a skill when following it went wrong or you corrected it. Saving runs without asking and says what it saved. | Remove |
+| `manual` | Searches this README and [docs/tools.md](docs/tools.md), built into the binary, so mokuzu can explain how its own features work (cron jobs, memory, approval, setup) from the docs instead of guessing. | No |
 | `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). To watch for something, ask for a repeating job that checks it: a run that replies exactly `NO_REPLY` posts nothing, so it speaks only once the thing happens, then removes its own job. | No |
 | `webhook` | With `[webhook]` set, makes a named webhook: a secret URL, `http://<this machine>:<port>/hook/<secret>`, that outside services POST to. Each request runs the webhook's instructions with the request body (up to 64 KB, given to the model as untrusted data) in a fresh conversation, and posts the reply where the webhook was made. Requests to one webhook run one at a time. Approval prompts during a run are denied, even in auto mode. The port is on your local network; put a tunnel in front of it for services on the internet. Discord only. | No |
 | `settings` | Reads or changes the model and a few limits. | Yes |
