@@ -163,9 +163,11 @@ const VOICE_NAME: usize = 40;
 const VOICE_MODEL: usize = 41;
 const VOICE_URL: usize = 42;
 const WEBHOOK_PORT: usize = 43;
+const BROWSER: usize = 44;
+const BROWSER_APPROVE: usize = 45;
 /// First of the rows for already configured MCP servers, followed by the configured Discord
 /// servers' rows.
-const MCP_FIRST: usize = 44;
+const MCP_FIRST: usize = 46;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -565,6 +567,28 @@ impl Form {
                 .map(|port| port.to_string())
                 .unwrap_or_default(),
         ));
+        fields.push(field(
+            STEP_MCP,
+            "Built-in browser",
+            Kind::Select(options(&[ENABLED, DISABLED])),
+            if current.is_none_or(|c| c.browser_enabled) {
+                ENABLED
+            } else {
+                DISABLED
+            }
+            .to_owned(),
+        ));
+        fields.push(field(
+            STEP_MCP,
+            "Browser approval",
+            Kind::Select(options(&[NEVER_ASK, ASK])),
+            if current.is_some_and(|c| c.browser_approve) {
+                ASK
+            } else {
+                NEVER_ASK
+            }
+            .to_owned(),
+        ));
         let mcp_names: Vec<String> = current
             .map(|c| c.mcp.keys().cloned().collect())
             .unwrap_or_default();
@@ -646,6 +670,7 @@ impl Form {
                 MCP_COMMAND | MCP_ARGS | MCP_ENV => self.fields[MCP_ADD].value == STDIO,
                 MCP_URL | MCP_TOKEN => self.fields[MCP_ADD].value == HTTP,
                 REVIEWER => self.fields[APPROVAL].value == AUTO,
+                BROWSER_APPROVE => self.fields[BROWSER].value == ENABLED,
                 API => matches!(
                     self.provider(),
                     Provider::OpencodeGo | Provider::GithubCopilot
@@ -907,19 +932,8 @@ impl Form {
             }
         };
         let old = std::fs::read_to_string(path).ok();
-        let mut text = merge_mcp(&render_toml(&answers), old.as_deref(), &remove, add);
-        let mut config = Config::parse(&text).context("form produced an invalid config")?;
-        // A new config comes with the browser; after that it is one more server to keep or remove.
-        if old.is_none() && !config.mcp.contains_key(config::BROWSER_SERVER) {
-            let browser = config::browser_server(&config.database_path);
-            text = merge_mcp(
-                &text,
-                Some(&text),
-                &[],
-                Some((config::BROWSER_SERVER.to_owned(), browser)),
-            );
-            config = Config::parse(&text).context("form produced an invalid config")?;
-        }
+        let text = merge_mcp(&render_toml(&answers), old.as_deref(), &remove, add);
+        let config = Config::parse(&text).context("form produced an invalid config")?;
 
         config::write(path, &text)?;
         Ok(Some(config))
@@ -1019,6 +1033,8 @@ impl Form {
             viewer_port: self
                 .number(VIEWER_PORT, 1)?
                 .unwrap_or(config::DEFAULT_VIEWER_PORT),
+            enabled: self.fields[BROWSER].value == ENABLED,
+            approve: self.fields[BROWSER_APPROVE].value == ASK,
         })
     }
 
@@ -1155,6 +1171,19 @@ impl Form {
             .map(|(_, name)| name.clone())
             .collect();
         let kind = self.fields[MCP_ADD].value.as_str();
+        let kept = |name: &str| {
+            self.mcp_names.iter().any(|n| n == name) && !remove.iter().any(|n| n == name)
+        };
+        if self.fields[BROWSER].value == ENABLED
+            && (kept(config::BROWSER_SERVER)
+                || (kind != NO && self.value(MCP_NAME).trim() == config::BROWSER_SERVER))
+        {
+            return Err(format!(
+                "the built-in browser uses the name `{}`; remove or rename that server, or \
+                 disable the browser",
+                config::BROWSER_SERVER
+            ));
+        }
         if kind == NO {
             return Ok((remove, None));
         }
@@ -1623,6 +1652,16 @@ fn help(i: usize) -> (&'static str, &'static str) {
              when mokuzu next starts."
         }
         VIEWER_PORT => "Port of the /browser live view on this machine's network.",
+        BROWSER => {
+            "The browser mokuzu comes with: invisible-playwright-mcp drives a Firefox patched so \
+             sites see an ordinary browser, keeping sign-ins in a profile next to the database. \
+             Its tools are browser__*. Needs uv; download its Firefox once with `uvx --from \
+             invisible-playwright invisible-playwright fetch`. Takes effect when mokuzu next starts."
+        }
+        BROWSER_APPROVE => {
+            "Never ask lets it browse like fetch_url. Ask every call puts each browser action to \
+             you, or to the reviewer in auto mode."
+        }
         WEBHOOK_PORT => {
             "Port on this machine's network that webhooks mokuzu makes listen on; each POST to \
              one runs its instructions. Leave empty to turn webhooks off. Services on the \
@@ -1768,6 +1807,8 @@ struct Answers {
 
 /// `[browser]` keys.
 struct BrowserOptions {
+    enabled: bool,
+    approve: bool,
     width: u32,
     height: u32,
     viewer_port: u16,
@@ -1866,6 +1907,8 @@ fn render_toml(answers: &Answers) -> String {
          path = {db}\n\
          \n\
          [browser]\n\
+         enabled = {enabled}\n\
+         approve = {approve}\n\
          width = {width}\n\
          height = {height}\n\
          viewer_port = {port}\n\
@@ -1873,6 +1916,8 @@ fn render_toml(answers: &Answers) -> String {
          [approval]\n",
         log = quote(&answers.log_level),
         db = quote(&answers.database.to_string_lossy()),
+        enabled = browser.enabled,
+        approve = browser.approve,
         width = browser.width,
         height = browser.height,
         port = browser.viewer_port,
@@ -1954,9 +1999,9 @@ mod tests {
             form.mcp().is_err(),
             "existing name is refused unless removed"
         );
-        // The migration added the browser too, so linear is the second row.
-        assert_eq!(form.mcp_names, ["browser", "linear"]);
-        form.fields[MCP_FIRST + 1].value = REMOVE.to_owned();
+        // The browser is built in, not one of the rows.
+        assert_eq!(form.mcp_names, ["linear"]);
+        form.fields[MCP_FIRST].value = REMOVE.to_owned();
         let (remove, add) = form.mcp().expect("replaces it");
         assert_eq!(remove, ["linear"]);
         assert_eq!(add.expect("added").0, "linear");
@@ -1973,6 +2018,12 @@ mod tests {
         assert_eq!(gh.env["MODE"].as_str(), "ro");
         form.fields[MCP_ENV].value = "oops".to_owned();
         assert!(form.mcp().is_err());
+
+        form.fields[MCP_ENV].value = String::new();
+        form.fields[MCP_NAME].value = config::BROWSER_SERVER.to_owned();
+        assert!(form.mcp().is_err(), "the built-in browser has that name");
+        form.fields[BROWSER].value = DISABLED.to_owned();
+        assert!(form.mcp().is_ok(), "free once the browser is off");
     }
 
     #[test]
@@ -2048,6 +2099,8 @@ mod tests {
                 compact_at_tokens: 50_000,
             },
             browser: BrowserOptions {
+                enabled: true,
+                approve: true,
                 width: 1920,
                 height: 800,
                 viewer_port: 8765,
@@ -2067,6 +2120,7 @@ mod tests {
             (8000, 50_000)
         );
         assert_eq!(config.browser_screen, (1920, 800));
+        assert!(config.browser_enabled && config.browser_approve);
         assert_eq!(config.viewer_port, 8765);
         assert_eq!(config.webhook_port, Some(22051));
         assert_eq!(config.model, "qwen3.8-max");

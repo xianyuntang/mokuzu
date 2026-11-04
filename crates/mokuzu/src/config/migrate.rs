@@ -12,12 +12,12 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
 const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] =
-    [spell_out_defaults, add_browser];
+    [spell_out_defaults, add_browser, built_in_browser];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
 pub fn migrate(text: &str) -> Result<Option<String>> {
@@ -151,14 +151,15 @@ fn spell_out_defaults(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
-/// Name of the browser MCP server mokuzu sets up.
+/// Name of the built-in browser's MCP server, and so the prefix of its tools.
 pub const BROWSER_SERVER: &str = "browser";
-/// The package that server runs; a server whose arguments name it is that browser already.
-const BROWSER_PACKAGE: &str = "invisible-playwright-mcp";
+/// The package the built-in browser runs; a server whose arguments name it is that browser.
+pub const BROWSER_PACKAGE: &str = "invisible-playwright-mcp";
 
-/// `[mcp.servers.browser]`: a Firefox patched so sites see an ordinary browser, drawing on the
-/// virtual desktop when there is no screen, keeping sign-ins in a profile next to `database`.
-pub fn browser_server(database: &Path) -> Table {
+/// `[mcp.servers.browser]` as version 2 wrote it: a Firefox patched so sites see an ordinary
+/// browser, drawing on the virtual desktop when there is no screen, keeping sign-ins in a
+/// profile next to `database`.
+fn browser_server(database: &Path) -> Table {
     let profile = database
         .parent()
         .unwrap_or(Path::new("."))
@@ -189,23 +190,53 @@ fn add_browser(doc: &mut DocumentMut) -> Result<()> {
         .to_owned();
     let mcp = implicit_table(doc.as_table_mut(), "mcp")?;
     let servers = implicit_table(mcp, "servers")?;
-    let runs_it = servers.iter().any(|(_, server)| {
-        server
-            .get("args")
-            .and_then(Item::as_array)
-            .is_some_and(|args| {
-                args.iter().any(|arg| {
-                    arg.as_str()
-                        .is_some_and(|arg| arg.contains(BROWSER_PACKAGE))
-                })
-            })
-    });
+    let runs_it = servers.iter().any(|(_, server)| runs_browser(server));
     if !runs_it && !servers.contains_key(BROWSER_SERVER) {
         servers.insert(
             BROWSER_SERVER,
             Item::Table(browser_server(Path::new(&database))),
         );
     }
+    Ok(())
+}
+
+/// Whether an MCP server table runs the browser package.
+fn runs_browser(server: &Item) -> bool {
+    server
+        .get("args")
+        .and_then(Item::as_array)
+        .is_some_and(|args| {
+            args.iter().any(|arg| {
+                arg.as_str()
+                    .is_some_and(|arg| arg.contains(BROWSER_PACKAGE))
+            })
+        })
+}
+
+/// 2 → 3: the browser is built in, turned on by `browser.enabled`, instead of an MCP server.
+/// `[mcp.servers.browser]`, when it runs the browser, is dropped for `enabled = true` with its
+/// `approve`; without it (removed, or the user's own server under another name) the built-in
+/// one stays off.
+fn built_in_browser(doc: &mut DocumentMut) -> Result<()> {
+    let servers = doc
+        .get_mut("mcp")
+        .and_then(|mcp| mcp.get_mut("servers"))
+        .and_then(Item::as_table_like_mut);
+    let ours = servers.and_then(|servers| {
+        servers
+            .get(BROWSER_SERVER)
+            .is_some_and(runs_browser)
+            .then(|| servers.remove(BROWSER_SERVER))
+            .flatten()
+    });
+    let approve = ours
+        .as_ref()
+        .and_then(|server| server.get("approve"))
+        .and_then(Item::as_bool)
+        .unwrap_or(false);
+    let browser = table(doc, &["browser"])?;
+    fill(browser, "enabled", ours.is_some());
+    fill(browser, "approve", approve);
     Ok(())
 }
 
@@ -253,7 +284,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 2",
+            "version = 3",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -293,18 +324,12 @@ mod tests {
     }
 
     #[test]
-    fn version_1_adds_the_browser_unless_one_is_there() {
-        let old = "version = 1\n[database]\npath = \"/home/me/.local/share/mokuzu/mokuzu.db\"\n";
+    fn version_1_gets_the_browser_unless_one_is_there() {
+        let old = "version = 1\n[database]\npath = \"/home/me/.local/share/mokuzu/mokuzu.db\"\n\
+                   [browser]\nwidth = 1280\n";
         let new = migrate(old).expect("valid").expect("migrated");
-        assert!(
-            new.contains("[mcp.servers.browser]\ncommand = \"uvx\""),
-            "{new}"
-        );
-        assert!(!new.contains("[mcp]\n"), "no empty [mcp] header: {new}");
-        assert!(
-            new.contains("STEALTHFOX_PROFILE_DIR = \"/home/me/.local/share/mokuzu/stealthfox\""),
-            "{new}"
-        );
+        assert!(new.contains("enabled = true\napprove = false"), "{new}");
+        assert!(!new.contains("[mcp"), "no leftover MCP tables: {new}");
         assert!(migrate(&new).expect("valid").is_none(), "already current");
 
         let mine = format!(
@@ -312,10 +337,37 @@ mod tests {
         );
         let new = migrate(&mine).expect("valid").expect("migrated");
         assert!(
-            !new.contains("servers.browser"),
+            new.contains("[mcp.servers.stealth]"),
             "kept the user's own: {new}"
         );
-        assert!(new.contains("approve = true"), "{new}");
+        assert!(new.contains("enabled = false"), "no second browser: {new}");
+    }
+
+    #[test]
+    fn version_2_turns_the_browser_server_into_the_built_in_one() {
+        let base = "version = 2\n[browser]\nwidth = 1280\n";
+        let ours = format!(
+            "{base}[mcp.servers.browser]\ncommand = \"uvx\"\nargs = [\"invisible-playwright-mcp\"]\n\
+             approve = true\n[mcp.servers.fs]\ncommand = \"fs\"\napprove = true\n"
+        );
+        let new = migrate(&ours).expect("valid").expect("migrated");
+        assert!(!new.contains("servers.browser"), "moved: {new}");
+        assert!(new.contains("[mcp.servers.fs]"), "others kept: {new}");
+        assert!(new.contains("enabled = true\napprove = true"), "{new}");
+
+        let removed = migrate(base).expect("valid").expect("migrated");
+        assert!(
+            removed.contains("enabled = false\napprove = false"),
+            "{removed}"
+        );
+
+        let theirs = format!("{base}[mcp.servers.browser]\nurl = \"https://x\"\napprove = true\n");
+        let new = migrate(&theirs).expect("valid").expect("migrated");
+        assert!(
+            new.contains("[mcp.servers.browser]"),
+            "not ours, kept: {new}"
+        );
+        assert!(new.contains("enabled = false"), "{new}");
     }
 
     #[test]

@@ -185,6 +185,27 @@ Offered when `[webhook]` sets a port. Discord only.
 - Approval prompts during a run are denied, even in auto mode.
 - The port is on your local network; put a tunnel in front of it for services on the internet.
 
+### `browser__*`
+
+The built-in browser, on unless `[browser] enabled = false`. Mokuzu starts
+[invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp) with the other
+MCP servers, and the tools it offers (opening pages, clicking, typing, reading what is on the
+page) reach the model as `browser__<tool>`.
+
+- It drives a Firefox patched so sites see an ordinary browser, for signed-in sites and pages
+  that block `fetch_url` or need JavaScript.
+- Sign-ins are kept in a profile, `stealthfox/` next to the database, so a site you signed in to
+  once stays signed in.
+- It needs uv and its Firefox (`uvx --from invisible-playwright invisible-playwright fetch`).
+  If it cannot start, mokuzu runs without it and logs why.
+- `[browser] approve = false`, the default, browses without asking. `approve = true` puts each
+  action to you, or to the reviewer in auto mode. Crabs in `cast_crabs` can use it only when it
+  does not ask.
+- On Linux without a screen it draws on a virtual Xvfb desktop. `/browser` gives a link to a
+  live view of it on your local network, to watch.
+- It is set up on the MCP page of `mokuzu configure`, under **Built-in browser**, and takes
+  effect when mokuzu next starts.
+
 ### `settings`
 
 Reads or changes a few of mokuzu's own settings in its config file. Needs approval.

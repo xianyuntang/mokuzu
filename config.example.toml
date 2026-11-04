@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 2
+version = 3
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -61,8 +61,16 @@ level = "warn"
 [database]
 path = "/Users/you/.local/share/mokuzu/mokuzu.db"
 
-# The virtual desktop MCP servers' browsers draw on, and its live view.
+# The browser mokuzu comes with, the virtual desktop browsers draw on, and its live view.
 [browser]
+# The built-in browser: invisible-playwright-mcp drives a Firefox patched so sites see an
+# ordinary browser, keeping sign-ins in `stealthfox/` next to the database. Its tools are
+# `browser__*`. Needs uv; download its Firefox once with
+# `uvx --from invisible-playwright invisible-playwright fetch`. Set false to go without.
+enabled = true
+# Ask before each browser action (or have the reviewer check it in auto mode). false browses
+# without asking, like fetch_url.
+approve = false
 # Desktop size in pixels when no monitor is plugged in (Xvfb). Larger makes the /browser live
 # view sharper. At least 640x480.
 width = 1280
@@ -96,14 +104,6 @@ viewer_port = 22050
 # args = ["-y", "@modelcontextprotocol/server-github"]
 # env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }
 # approve = true
-# The browser mokuzu comes with: invisible-playwright-mcp drives a Firefox patched so sites see an
-# ordinary browser, and keeps sign-ins in STEALTHFOX_PROFILE_DIR. Download its Firefox once with
-# `uvx --from invisible-playwright invisible-playwright fetch`. Remove this table to go without.
-[mcp.servers.browser]
-command = "uvx"
-args = ["invisible-playwright-mcp"]
-env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/Users/you/.local/share/mokuzu/stealthfox" }
-approve = false
 # A remote server over streamable HTTP, with an optional bearer token:
 # [mcp.servers.docs]
 # url = "https://example.com/mcp"

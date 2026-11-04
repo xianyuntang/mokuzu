@@ -8,10 +8,10 @@ use serde::Deserialize;
 
 mod migrate;
 
+pub use migrate::BROWSER_SERVER;
 pub use migrate::VERSION;
 #[cfg(test)]
 pub use migrate::migrate;
-pub use migrate::{BROWSER_SERVER, browser_server};
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
@@ -212,10 +212,14 @@ struct WebhookSection {
     port: u16,
 }
 
-/// `[browser]`: the virtual desktop browsers draw on, and its live view.
+/// `[browser]`: the built-in browser, the virtual desktop browsers draw on, and its live view.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowserSection {
+    /// Runs the built-in browser, invisible-playwright-mcp, as MCP server `browser`.
+    enabled: bool,
+    /// Ask before each browser action.
+    approve: bool,
     /// Size in pixels of the Xvfb desktop.
     width: u32,
     height: u32,
@@ -577,6 +581,10 @@ pub struct Config {
     pub database_path: PathBuf,
     /// The user's time zone, for message timestamps and scheduled jobs.
     pub timezone: chrono_tz::Tz,
+    /// Runs the built-in browser; see `Config::mcp_servers`.
+    pub browser_enabled: bool,
+    /// Ask before each action of the built-in browser.
+    pub browser_approve: bool,
     /// `(width, height)` of the virtual desktop browsers draw on when there is no real screen.
     pub browser_screen: (u32, u32),
     /// Port of the `/browser` live view.
@@ -692,6 +700,12 @@ impl Config {
                 MIN_SCREEN.1
             );
         }
+        if file.browser.enabled && file.mcp.servers.contains_key(BROWSER_SERVER) {
+            bail!(
+                "mcp.servers.{BROWSER_SERVER}: the built-in browser uses that name; rename the \
+                 server or set browser.enabled = false"
+            );
+        }
         if file.browser.viewer_port == 0 {
             bail!("browser.viewer_port must be between 1 and 65535");
         }
@@ -746,11 +760,49 @@ impl Config {
             voice: file.voice,
             database_path: file.database.path,
             timezone,
+            browser_enabled: file.browser.enabled,
+            browser_approve: file.browser.approve,
             browser_screen,
             viewer_port: file.browser.viewer_port,
             webhook_port,
             path: PathBuf::new(),
         })
+    }
+}
+
+impl Config {
+    /// The MCP servers to start: the configured ones, plus the built-in browser when enabled.
+    pub fn mcp_servers(&self) -> BTreeMap<String, McpServer> {
+        let mut servers = self.mcp.clone();
+        if self.browser_enabled {
+            servers.insert(BROWSER_SERVER.to_owned(), self.browser_server());
+        }
+        servers
+    }
+
+    /// invisible-playwright-mcp: a Firefox patched so sites see an ordinary browser, opened
+    /// headed so it draws on the virtual desktop when there is no screen, keeping sign-ins in a
+    /// profile next to the database.
+    fn browser_server(&self) -> McpServer {
+        let profile = self
+            .database_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("stealthfox");
+        McpServer {
+            command: Some("uvx".to_owned()),
+            args: vec![migrate::BROWSER_PACKAGE.to_owned()],
+            env: BTreeMap::from([
+                ("STEALTHFOX_HEADLESS".to_owned(), Secret("0".to_owned())),
+                (
+                    "STEALTHFOX_PROFILE_DIR".to_owned(),
+                    Secret(profile.to_string_lossy().into_owned()),
+                ),
+            ]),
+            url: None,
+            token: None,
+            approve: self.browser_approve,
+        }
     }
 }
 
@@ -954,6 +1006,39 @@ mod tests {
         );
         assert!(Config::parse(&format!("{key}[browser]\nwidth = 100\n")).is_err());
         assert!(Config::parse(&format!("{key}[browser]\nviewer_port = 0\n")).is_err());
+    }
+
+    #[test]
+    fn built_in_browser_joins_the_mcp_servers() {
+        let key = "[opencode-go]\napi_key = \"k\"\n[database]\npath = \"/data/mokuzu.db\"\n";
+        let config = Config::parse(key).expect("valid");
+        assert!(config.browser_enabled && !config.browser_approve);
+        assert!(
+            config.mcp.is_empty(),
+            "not a configured server: {:?}",
+            config.mcp
+        );
+        let browser = &config.mcp_servers()[BROWSER_SERVER];
+        assert_eq!(browser.args, ["invisible-playwright-mcp"]);
+        assert_eq!(
+            browser.env["STEALTHFOX_PROFILE_DIR"].as_str(),
+            "/data/stealthfox"
+        );
+
+        let off = format!("{key}[browser]\nenabled = false\n");
+        assert!(Config::parse(&off).expect("valid").mcp_servers().is_empty());
+        let clash = format!(
+            "version = {VERSION}\ntimezone = \"UTC\"\n{}",
+            "[model]\nname = \"m\"\nprovider = \"opencode-go\"\napi = \"openai\"\n\
+             max_tokens = 1000\ncompact_at_tokens = 20000\n\
+             [opencode-go]\napi_key = \"k\"\nbase_url = \"https://x\"\n\
+             [approval]\nmode = \"ask\"\n[log]\nlevel = \"warn\"\n\
+             [database]\npath = \"/d.db\"\n\
+             [browser]\nenabled = true\napprove = false\nwidth = 1280\nheight = 800\n\
+             viewer_port = 22050\n[mcp.servers.browser]\nurl = \"https://x\"\napprove = true\n"
+        );
+        let err = Config::parse(&clash).expect_err("name clash");
+        assert!(err.to_string().contains("built-in browser"), "{err:#}");
     }
 
     #[test]

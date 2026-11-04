@@ -100,7 +100,7 @@ pub async fn serve(config: Config) -> Result<()> {
     }
     crate::sandbox::probe().await;
     let display = crate::browser::desktop(config.browser_screen).await;
-    let mcp = Arc::new(Mcp::connect(&config.mcp, display.as_deref()).await);
+    let mcp = Arc::new(Mcp::connect(&config.mcp_servers(), display.as_deref()).await);
     let token = discord.token.as_str().to_owned();
     let voice = config
         .voice

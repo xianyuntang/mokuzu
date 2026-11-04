@@ -250,6 +250,7 @@ Logs:
 | `manual` | Searches this README and [docs/tools.md](docs/tools.md), built into the binary, so mokuzu can explain how its own features work (cron jobs, memory, approval, setup) from the docs instead of guessing. | No |
 | `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). To watch for something, ask for a repeating job that checks it: a run that replies exactly `NO_REPLY` posts nothing, so it speaks only once the thing happens, then removes its own job. | No |
 | `webhook` | With `[webhook]` set, makes a named webhook: a secret URL, `http://<this machine>:<port>/hook/<secret>`, that outside services POST to. Each request runs the webhook's instructions with the request body (up to 64 KB, given to the model as untrusted data) in a fresh conversation, and posts the reply where the webhook was made. Requests to one webhook run one at a time. Approval prompts during a run are denied, even in auto mode. The port is on your local network; put a tunnel in front of it for services on the internet. Discord only. | No |
+| `browser__*` | The [built-in browser](#browser): opens and works pages in a real Firefox, for signed-in sites and pages that block `fetch_url`. | With `[browser] approve = true` |
 | `settings` | Reads or changes the model and a few limits. | Yes |
 | MCP tools | Any tool from the MCP servers you connect. | Yes, per server |
 
@@ -277,16 +278,15 @@ them.
 
 ### Browser
 
-Mokuzu comes with a browser over MCP: [invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp)
-drives a Firefox patched so sites see an ordinary browser, and keeps sign-ins in a profile.
-`mokuzu configure` adds it to a new config, and updating from an older config adds it unless a
-server already runs it:
+Mokuzu has a browser built in: it starts [invisible-playwright-mcp](https://github.com/feder-cr/invisible_playwright_mcp),
+which drives a Firefox patched so sites see an ordinary browser, and keeps sign-ins in a
+profile, `stealthfox/` next to the database. Its tools reach the model as `browser__<tool>`. It
+is on by default; turn it off, or have it ask, under **Built-in browser** on the **MCP** page of
+`mokuzu configure`, or in the config:
 
 ```toml
-[mcp.servers.browser]
-command = "uvx"
-args = ["invisible-playwright-mcp"]
-env = { STEALTHFOX_HEADLESS = "0", STEALTHFOX_PROFILE_DIR = "/home/you/.local/share/mokuzu/stealthfox" }
+[browser]
+enabled = true
 approve = false
 ```
 
@@ -297,9 +297,11 @@ the other system packages, or by hand:
 uvx --from invisible-playwright invisible-playwright fetch   # downloads its Firefox once
 ```
 
-It browses without asking, like `fetch_url`. Set `approve = true` to approve each browser action
-yourself, or to have the reviewer check it in auto mode. Remove the server on the **MCP** page of `mokuzu configure` to go
-without a browser.
+Without them, mokuzu starts without a browser and logs why. With `approve = false` it browses
+without asking, like `fetch_url`; `approve = true` puts each browser action to you, or to the
+reviewer in auto mode. Configs that ran it as `[mcp.servers.browser]` move to the built-in one
+on update, keeping `approve`; a config without that server keeps the browser off. The name
+`browser` is reserved for it while it is on.
 
 On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
