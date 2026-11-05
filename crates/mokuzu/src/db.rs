@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use include_dir::{Dir, include_dir};
 use rusqlite::{Connection, OptionalExtension as _, Row, params};
 use rusqlite_migration::Migrations;
@@ -204,7 +204,11 @@ impl Db {
     {
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let mut conn = conn.lock().map_err(|_| anyhow!("database lock poisoned"))?;
+            // A panic mid-call rolls its transaction back as it unwinds, so the connection is
+            // still sound; refusing it would fail every later save until a restart.
+            let mut conn = conn
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             f(&mut conn)
         })
         .await

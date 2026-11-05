@@ -372,6 +372,13 @@ const PLATFORM_HINT: &str = "You are chatting over Discord. Markdown renders; ta
 
 /// End of the last complete tool round in the turn starting at `turn_start`, or `turn_start` if none.
 /// Every user message after the turn's prompt carries tool results, and each closes a round.
+fn to_rows(messages: &[Message]) -> Result<Vec<Value>> {
+    messages
+        .iter()
+        .map(|message| serde_json::to_value(message).context("failed to encode a message"))
+        .collect()
+}
+
 fn completed_rounds_end(messages: &[Message], turn_start: usize) -> usize {
     messages
         .iter()
@@ -492,6 +499,8 @@ pub struct Agent {
     /// Rebuilt by `run_turn`.
     system: String,
     messages: Vec<Message>,
+    /// How many of `messages` the database holds; the rest go in with the next save.
+    saved: usize,
     /// Ends the running turn early; shared with whoever can stop it.
     stop: Arc<Stop>,
     /// Set by the `restart` tool; the caller restarts once the turn is saved and sent.
@@ -529,6 +538,7 @@ impl Agent {
             key: key.to_owned(),
             posts_to: key.to_owned(),
             system: String::new(),
+            saved: messages.len(),
             messages,
             stop: Arc::default(),
             restart: false,
@@ -939,15 +949,22 @@ impl Agent {
             self.messages
                 .push(Message::assistant(format!("[turn aborted: {err:#}]")));
         }
-        let turn = self.messages[turn_start..]
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<Result<Vec<Value>, _>>()?;
+        self.flush().await?;
+        result
+    }
+
+    /// Appends the messages the database doesn't hold yet. On failure they stay pending, so the
+    /// next save retries them instead of leaving a gap that a restart would forget.
+    async fn flush(&mut self) -> Result<()> {
+        if self.saved == self.messages.len() {
+            return Ok(());
+        }
         self.db
-            .append(self.conversation_id, turn)
+            .append(self.conversation_id, to_rows(&self.messages[self.saved..])?)
             .await
             .context("failed to save the conversation")?;
-        result
+        self.saved = self.messages.len();
+        Ok(())
     }
 
     /// Once history (plus `prompt`) passes the configured budget, clears long tool output in
@@ -965,10 +982,13 @@ impl Agent {
         if cut == 0 {
             return Ok(());
         }
+        // Compaction drops originals from memory, so they must be in the database (and archived
+        // by the rewrite, where search finds them) first.
+        self.flush().await?;
         // Tool output is most of a long history, and clearing it needs no model call.
         if compact::prune(&mut self.messages[..cut]) && fits(&self.messages) {
             io.note("🗜️ cleared old tool output").await?;
-            return self.save_all().await;
+            return self.save_all(self.messages.clone()).await;
         }
         io.note("🗜️ compacting earlier conversation…").await?;
         let mut request = request(
@@ -1000,28 +1020,27 @@ impl Agent {
                 .await;
         }
         let mut compacted = compact::summary_messages(&summary).to_vec();
-        compacted.extend(self.messages.drain(cut..));
-        self.messages = compacted;
-        self.save_all().await
+        compacted.extend_from_slice(&self.messages[cut..]);
+        self.save_all(compacted).await
     }
 
-    /// Replaces the saved conversation with `self.messages`.
-    async fn save_all(&self) -> Result<()> {
-        let rows = self
-            .messages
-            .iter()
-            .map(serde_json::to_value)
-            .collect::<Result<Vec<Value>, _>>()?;
+    /// Replaces the saved conversation with `messages`, then the one in memory. Memory changes
+    /// only once the database has them, so a failed save loses nothing on restart.
+    async fn save_all(&mut self, messages: Vec<Message>) -> Result<()> {
         self.db
-            .rewrite(self.conversation_id, rows)
+            .rewrite(self.conversation_id, to_rows(&messages)?)
             .await
-            .context("failed to save the compacted conversation")
+            .context("failed to save the compacted conversation")?;
+        self.saved = messages.len();
+        self.messages = messages;
+        Ok(())
     }
 
     /// Forgets the conversation, in memory and on disk.
     pub async fn reset(&mut self) -> Result<()> {
         self.db.clear(self.conversation_id).await?;
         self.messages.clear();
+        self.saved = 0;
         Ok(())
     }
 
@@ -1360,6 +1379,42 @@ mod tests {
     }
 
     /// Calls the real model from `~/.config/mokuzu/config.toml`: `cargo test -- --ignored reviewer`.
+    #[tokio::test]
+    async fn a_failed_save_is_retried_by_the_next_one() {
+        crate::install_tls_provider();
+        let dir = std::env::temp_dir().join(format!("mokuzu-flush-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[opencode-go]\napi_key = \"unused\"\n").unwrap();
+        let db_path = dir.join("test.db");
+        let _ = std::fs::remove_file(&db_path);
+        let db = Db::open(&db_path).unwrap();
+        let mcp = Arc::new(Mcp::connect(&std::collections::BTreeMap::new(), None).await);
+        let mut agent = Agent::new(Config::load(&path).unwrap(), db.clone(), mcp, "flush-test")
+            .await
+            .unwrap();
+        let blocker = rusqlite::Connection::open(&db_path).unwrap();
+        blocker
+            .execute_batch(
+                "CREATE TRIGGER block BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT, 'full'); END",
+            )
+            .unwrap();
+        agent.messages.push(Message::user("first"));
+        agent.messages.push(Message::assistant("first reply"));
+        assert!(agent.flush().await.is_err());
+        assert_eq!(agent.saved, 0, "a failed save stays pending");
+
+        blocker.execute_batch("DROP TRIGGER block").unwrap();
+        agent.messages.push(Message::user("second"));
+        agent.messages.push(Message::assistant("second reply"));
+        agent.flush().await.unwrap();
+        let stored = db.messages(agent.conversation_id).await.unwrap();
+        assert_eq!(stored.len(), 4, "the missed turn went in with the next one");
+        assert_eq!(agent.saved, 4);
+        drop(agent);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[tokio::test]
     #[ignore = "sends two requests to the configured model"]
     async fn reviewer_passes_reads_and_flags_deletes() {
