@@ -21,6 +21,8 @@ use crate::config::McpServer;
 
 /// How long a server gets to start and list its tools; `npx` may download the server first.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long one tool call may run; a server that never answers would otherwise hang the turn.
+const CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Longest tool name providers accept.
 const MAX_NAME_CHARS: usize = 64;
 // ponytail: hard cap on tool output fed back to the model; page it if servers return more.
@@ -169,7 +171,16 @@ impl Server {
         if let Value::Object(args) = args {
             params = params.with_arguments(args.clone());
         }
-        match self.client.call_tool(params).await {
+        let Ok(called) = tokio::time::timeout(CALL_TIMEOUT, self.client.call_tool(params)).await
+        else {
+            tracing::warn!(server = %self.name, "{tool} gave no answer in {CALL_TIMEOUT:?}");
+            return (
+                format!("timed out after {CALL_TIMEOUT:?}"),
+                false,
+                Vec::new(),
+            );
+        };
+        match called {
             Ok(result) => {
                 let mut text: Vec<String> = result.content.iter().map(describe).collect();
                 if text.is_empty()

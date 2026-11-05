@@ -71,6 +71,8 @@ impl std::error::Error for Stopped {}
 
 /// How long a new model gets to answer its test request before a switch is refused.
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long one model request may take, reply included; replies are not streamed.
+const MODEL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Where the agent talks to the user: a Discord channel.
 pub trait Io {
@@ -130,6 +132,8 @@ impl Model {
         // OpenCode Go asks clients to name themselves instead of sending a generic HTTP-library agent.
         let http = reqwest::Client::builder()
             .user_agent(concat!("mokuzu/", env!("CARGO_PKG_VERSION")))
+            // Keepalive catches a dead connection, not a provider that holds one open and never answers.
+            .timeout(MODEL_TIMEOUT)
             .build()
             .context("failed to build HTTP client")?;
         let key = config.api_key.as_str();
