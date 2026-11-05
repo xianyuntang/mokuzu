@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use rig_core::completion::ToolDefinition;
+use serde_json::json;
 
 const LABEL: &str = "dev.mokuzu.serve";
 const UNIT: &str = "mokuzu.service";
@@ -66,6 +68,44 @@ pub fn restart() -> Result<()> {
     if !restart_installed()? {
         bail!("no background service is installed; run `mokuzu install` first");
     }
+    Ok(())
+}
+
+/// The `restart` tool: restarts the background service once the reply is sent.
+pub fn tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "restart".to_owned(),
+        description: "Restart mokuzu's background service, as `mokuzu restart` does, once this \
+                      reply is sent. Every conversation's running turn is cut off, so call it only \
+                      when the user asks for a restart."
+            .to_owned(),
+        parameters: json!({"type": "object", "properties": {}}),
+    }
+}
+
+/// Whether `mokuzu install` set up a background service that `restart` can restart.
+pub fn installed() -> bool {
+    std::env::home_dir().is_some_and(|home| {
+        if cfg!(target_os = "macos") {
+            plist_path(&home).exists()
+        } else {
+            cfg!(target_os = "linux") && unit_path(&home).exists()
+        }
+    })
+}
+
+/// Runs `mokuzu restart` in its own process group, so it outlives the service it stops.
+pub fn spawn_restart() -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let exe = std::env::current_exe().context("failed to locate the mokuzu binary")?;
+    Command::new(exe)
+        .arg("restart")
+        .process_group(0)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("failed to run `mokuzu restart`")?;
     Ok(())
 }
 

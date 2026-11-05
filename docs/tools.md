@@ -215,6 +215,12 @@ Reads or changes a few of mokuzu's own settings in its config file. Needs approv
 - Changes apply to every conversation from the next request.
 - It cannot turn on auto approval; only `mokuzu configure` or the config file can.
 
+### `restart`
+
+Restarts mokuzu's background service, as `mokuzu restart` does, when you ask for it. It waits
+until the reply is saved and sent, then runs `mokuzu restart`. Turns still running in other
+conversations are cut off. It works only after `mokuzu install` set up the service.
+
 ### `manual`
 
 Searches this file and the README, built into the binary, so mokuzu can explain how it works.

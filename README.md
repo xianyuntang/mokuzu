@@ -246,6 +246,7 @@ Logs:
 | `webhook` | With `[webhook]` set, makes a named webhook: a secret URL, `http://<this machine>:<port>/hook/<secret>`, that outside services POST to. Each request runs the webhook's instructions with the request body (up to 64 KB, given to the model as untrusted data) in a fresh conversation, and posts the reply where the webhook was made. Requests to one webhook run one at a time. Approval prompts during a run are denied, even in auto mode. The port is on your local network; put a tunnel in front of it for services on the internet. Discord only. | No |
 | `browser__*` | The [built-in browser](#browser): opens and works pages in a real Firefox, for signed-in sites and pages that block `fetch_url`. | With `[browser] approve = true` |
 | `settings` | Reads or changes the model and a few limits. | Yes |
+| `restart` | When you ask, runs `mokuzu restart` once its reply is sent. Needs the background service from `mokuzu install`. | No |
 | MCP tools | Any tool from the MCP servers you connect. | Yes, per server |
 
 ### MCP servers

@@ -951,6 +951,11 @@ async fn run_channel(
             let _ = reply.send(said);
         }
         io.finish_all(&messages, result.is_ok()).await;
+        if agent.take_restart()
+            && let Err(err) = crate::service::spawn_restart()
+        {
+            tracing::error!("{err:#}");
+        }
     }
 }
 

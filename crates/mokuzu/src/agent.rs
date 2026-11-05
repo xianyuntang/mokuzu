@@ -34,6 +34,7 @@ use crate::review::{self, Guard, Reviewer};
 use crate::sandbox;
 use crate::search;
 use crate::search::WebSearch;
+use crate::service;
 use crate::settings;
 use crate::skill;
 use crate::swarm;
@@ -438,6 +439,7 @@ pub(crate) fn request(
             manual::tool(),
             fetch::tool(),
             settings::tool(),
+            service::tool(),
         ]
         .into_iter()
         .chain(config.search.is_some().then(search::tool))
@@ -492,6 +494,8 @@ pub struct Agent {
     messages: Vec<Message>,
     /// Ends the running turn early; shared with whoever can stop it.
     stop: Arc<Stop>,
+    /// Set by the `restart` tool; the caller restarts once the turn is saved and sent.
+    restart: bool,
 }
 
 impl Agent {
@@ -527,6 +531,7 @@ impl Agent {
             system: String::new(),
             messages,
             stop: Arc::default(),
+            restart: false,
         })
     }
 
@@ -539,6 +544,11 @@ impl Agent {
     /// prompt carries outside text that could talk a reviewer into approving.
     pub fn ask_for_every_action(&mut self) {
         self.reviewer = None;
+    }
+
+    /// Whether a turn asked for a restart since the last call; clears the request.
+    pub fn take_restart(&mut self) -> bool {
+        std::mem::take(&mut self.restart)
     }
 
     /// Sets where this conversation's output goes, so jobs made in it post there too.
@@ -1140,6 +1150,14 @@ impl Agent {
                         None => "error: webhooks are off; set [webhook] port".to_owned(),
                     },
                     "settings" => self.settings(&call.function.arguments, io).await?,
+                    "restart" if service::installed() => {
+                        self.restart = true;
+                        io.note("🔄 restarting after this reply").await?;
+                        "mokuzu restarts once this reply is sent; tell the user.".to_owned()
+                    }
+                    "restart" => "error: no background service is installed; the user runs \
+                                  `mokuzu install` first"
+                        .to_owned(),
                     "fetch_url" => {
                         let args = &call.function.arguments;
                         if let Some(url) = args["url"].as_str() {
