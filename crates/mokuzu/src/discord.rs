@@ -45,6 +45,7 @@ const FAILED: char = '❌';
 const NOTHING_TO_STOP: char = '💤';
 /// Stops the running turn of the conversation it is sent in.
 const STOP_COMMAND: &str = "/stop";
+const RESTART_COMMAND: &str = "/restart";
 const RUN: &str = "mokuzu:run";
 const DENY: &str = "mokuzu:deny";
 /// Longest status line kept; statuses are one-line summaries.
@@ -567,6 +568,19 @@ impl Handler {
         }
     }
 
+    /// `/restart` typed as text: restarts the background service, answering with the outcome.
+    async fn restart(&self, ctx: &Context, msg: &Message) {
+        let Some(text) = restart_refusal() else {
+            if let Err(err) = msg.reply(&ctx.http, RESTARTING).await {
+                tracing::warn!("failed to answer /restart: {err:#}");
+            }
+            return restart(&ctx.http, msg.channel_id).await;
+        };
+        if let Err(err) = msg.reply(&ctx.http, text).await {
+            tracing::warn!("failed to answer /restart: {err:#}");
+        }
+    }
+
     /// Starts a turn for `content`: acknowledges `msg`, opens a thread on it in a server text
     /// channel, and hands the prompt to that conversation.
     async fn accept(
@@ -626,6 +640,18 @@ impl Handler {
             return Ok(command
                 .create_response(&ctx.http, CreateInteractionResponse::Message(reply))
                 .await?);
+        }
+        if command.data.name == RESTART_COMMAND[1..] {
+            let refusal = restart_refusal();
+            let reply =
+                CreateInteractionResponseMessage::new().content(refusal.unwrap_or(RESTARTING));
+            command
+                .create_response(&ctx.http, CreateInteractionResponse::Message(reply))
+                .await?;
+            if refusal.is_none() {
+                restart(&ctx.http, command.channel_id).await;
+            }
+            return Ok(());
         }
         let mut content = format!("/{}", command.data.name);
         for option in &command.data.options {
@@ -698,6 +724,10 @@ impl EventHandler for Handler {
             self.stop(&ctx, &msg).await;
             return;
         }
+        if content == RESTART_COMMAND {
+            self.restart(&ctx, &msg).await;
+            return;
+        }
         let attachments = msg
             .attachments
             .iter()
@@ -730,6 +760,8 @@ impl EventHandler for Handler {
                 .description("Get a link to a live view of mokuzu's browser"),
             CreateCommand::new(&STOP_COMMAND[1..])
                 .description("Stop what mokuzu is doing in this conversation"),
+            CreateCommand::new(&RESTART_COMMAND[1..])
+                .description("Restart mokuzu's background service"),
         ];
         if self.voice.is_some() {
             commands.push(
@@ -777,6 +809,23 @@ impl EventHandler for Handler {
         if let Err(err) = result {
             tracing::warn!("failed to handle interaction: {err:#}");
         }
+    }
+}
+
+const RESTARTING: &str = "🔄 restarting";
+
+/// Why `/restart` can't run here, if it can't.
+fn restart_refusal() -> Option<&'static str> {
+    (!crate::service::installed())
+        .then_some("No background service is installed; run `mokuzu install` first.")
+}
+
+/// Starts `mokuzu restart`, called once "restarting" is sent since the restart can land before
+/// anything sent after it; turns running in any conversation are cut off. Failures go to `channel`.
+async fn restart(http: &Http, channel: ChannelId) {
+    if let Err(err) = crate::service::spawn_restart() {
+        tracing::error!("{err:#}");
+        let _ = channel.say(http, format!("error: {err:#}")).await;
     }
 }
 
@@ -951,11 +1000,6 @@ async fn run_channel(
             let _ = reply.send(said);
         }
         io.finish_all(&messages, result.is_ok()).await;
-        if agent.take_restart()
-            && let Err(err) = crate::service::spawn_restart()
-        {
-            tracing::error!("{err:#}");
-        }
     }
 }
 

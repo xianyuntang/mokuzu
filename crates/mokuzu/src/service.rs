@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use rig_core::completion::ToolDefinition;
-use serde_json::json;
 
 const LABEL: &str = "dev.mokuzu.serve";
 const UNIT: &str = "mokuzu.service";
@@ -71,19 +69,7 @@ pub fn restart() -> Result<()> {
     Ok(())
 }
 
-/// The `restart` tool: restarts the background service once the reply is sent.
-pub fn tool() -> ToolDefinition {
-    ToolDefinition {
-        name: "restart".to_owned(),
-        description: "Restart mokuzu's background service, as `mokuzu restart` does, once this \
-                      reply is sent. Every conversation's running turn is cut off, so call it only \
-                      when the user asks for a restart."
-            .to_owned(),
-        parameters: json!({"type": "object", "properties": {}}),
-    }
-}
-
-/// Whether `mokuzu install` set up a background service that `restart` can restart.
+/// Whether `mokuzu install` set up a background service that `/restart` can restart.
 pub fn installed() -> bool {
     std::env::home_dir().is_some_and(|home| {
         if cfg!(target_os = "macos") {
