@@ -96,11 +96,11 @@ if [ -e "$dir/mitten" ] && [ ! -L "$dir/mitten" ]; then
 fi
 
 # System packages behind the optional tools: the code sandbox and its Python libraries, CJK
-# fonts for charts, the virtual desktop and its live view, Node for `npx` MCP servers, and the
+# fonts for charts, the virtual desktop, its live view and taking control of it, Node for `npx` MCP servers, and the
 # libraries the browser's Firefox links (Ubuntu 24.04 renamed some with a t64 suffix; the name a
 # release lacks is skipped).
 # Asked on first installs with apt and a terminal; MOKUZU_DEPS=1 installs without asking, 0 skips.
-deps="bubblewrap xvfb ffmpeg python3 python3-pandas python3-numpy python3-matplotlib
+deps="bubblewrap xvfb ffmpeg xdotool python3 python3-pandas python3-numpy python3-matplotlib
 python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm
 libgtk-3-0 libgtk-3-0t64 libdbus-glib-1-2 libasound2 libasound2t64 libxtst6 libx11-xcb1"
 want_deps="${MOKUZU_DEPS:-}"

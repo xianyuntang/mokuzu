@@ -201,7 +201,8 @@ page) reach the model as `browser__<tool>`.
   action to you, or to the reviewer in auto mode. Crabs in `cast_crabs` can use it only when it
   does not ask.
 - On Linux without a screen it draws on a virtual Xvfb desktop. `/browser` gives a link to a
-  live view of it on your local network, to watch.
+  live view of it on your local network. **Take control** there lets you click and type on it
+  (needs `xdotool`); the agent's browser actions wait until you hand it back.
 - It is set up on the MCP page of `mokuzu configure`, under **Built-in browser**, and takes
   effect when mokuzu next starts.
 

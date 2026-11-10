@@ -73,7 +73,7 @@ The script downloads the release for your platform, checks its SHA-256, and puts
 
 On a first install with apt (Debian, Ubuntu, Raspberry Pi OS), the script offers to install the
 system packages the optional tools need, with `sudo`: `bubblewrap` and Python libraries for
-`run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb` and `ffmpeg` for the
+`run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb`, `ffmpeg`, and `xdotool` for the
 browser desktop and its live view, and `nodejs`, `npm`, and [uv](https://docs.astral.sh/uv/) for
 MCP servers started with `npx` or `uvx`, and the Firefox of the bundled [browser](#browser). Run `mokuzu install` again afterwards so the background
 service finds them.
@@ -305,8 +305,11 @@ own instead of sharing one: started the first time the crab browses, from a copy
 On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
 `/browser` replies with a link to a live view of that desktop on your local network (port 22050,
-or `[browser]` `viewer_port`), to watch; nothing done there reaches the browser. The view needs
-`ffmpeg`. `[browser]` `width` and `height` set the desktop's size.
+or `[browser]` `viewer_port`). **Take control** there to use the desktop yourself, for a sign-in
+or a captcha: clicks, scrolling, and keys go to it, and a text field takes typing from a phone or
+an input method. Meanwhile the agent's browser actions wait until you **Hand back**, or for 30
+seconds after the page closes. Anyone with the link can do the same, so share it with no one. The
+view needs `ffmpeg`, and taking control `xdotool`. `[browser]` `width` and `height` set the desktop's size.
 
 ## Approval
 

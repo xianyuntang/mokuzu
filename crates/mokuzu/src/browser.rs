@@ -3,7 +3,8 @@
 //! one opens headed (invisible-playwright-mcp with `STEALTHFOX_HEADLESS=0`) shows up there.
 
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -18,6 +19,36 @@ pub const BROWSER_COMMAND: &str = "/browser";
 /// `port` is the viewer's port, taken on first use; 0 picks a free one.
 pub async fn view_link(port: u16) -> Result<String> {
     viewer::link(port).await
+}
+
+/// How long the user keeps control of the desktop without the viewer renewing it, so a closed
+/// viewer hands the browser back.
+const CONTROL_LEASE: Duration = Duration::from_secs(30);
+
+/// When the user's control of the desktop, taken in the viewer, runs out; `None` when the agent
+/// has it.
+static CONTROL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Gives the desktop to the user, renewing their lease, or back to the agent.
+pub(crate) fn set_control(user: bool) {
+    *CONTROL.lock().unwrap_or_else(PoisonError::into_inner) =
+        user.then(|| Instant::now() + CONTROL_LEASE);
+}
+
+/// Whether the user is controlling the desktop, so the agent's browser waits.
+pub fn user_in_control() -> bool {
+    CONTROL
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_some_and(|until| until > Instant::now())
+}
+
+/// Returns once the user hands the desktop back, or their lease runs out.
+// ponytail: polls twice a second; a watch channel if the wait ever needs to be instant.
+pub async fn until_user_done() {
+    while user_in_control() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// The Xvfb screen browsers draw on when no real one is plugged in; started once, then kept

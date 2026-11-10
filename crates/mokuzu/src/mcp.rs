@@ -294,6 +294,10 @@ impl Server {
         } else {
             io.note(&format!("🔌 {} → {tool}", self.name)).await?;
         }
+        if self.name == BROWSER_SERVER && crate::browser::user_in_control() {
+            io.note("⏸️ waiting for you to hand the browser back in /browser")
+                .await?;
+        }
         let (output, ok, images) = self.invoke(tool, args).await;
         if self.approve {
             io.ran(&output, ok).await?;
@@ -317,7 +321,11 @@ impl Server {
     }
 
     /// Calls `tool` on the server: its output, whether it succeeded, and the images it returned.
+    /// The built-in browser's tools wait while the user controls the desktop.
     async fn invoke(&self, tool: &str, args: &Value) -> (String, bool, Vec<Image>) {
+        if self.name == BROWSER_SERVER {
+            crate::browser::until_user_done().await;
+        }
         let mut params = CallToolRequestParams::new(tool.to_owned());
         if let Value::Object(args) = args {
             params = params.with_arguments(args.clone());
