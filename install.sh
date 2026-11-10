@@ -103,6 +103,8 @@ fi
 deps="bubblewrap xvfb ffmpeg xdotool python3 python3-pandas python3-numpy python3-matplotlib
 python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm
 libgtk-3-0 libgtk-3-0t64 libdbus-glib-1-2 libasound2 libasound2t64 libxtst6 libx11-xcb1"
+core_pin=
+[ "$arch" = aarch64 ] && core_pin="--with invisible-core<56"
 want_deps="${MOKUZU_DEPS:-}"
 if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] &&
     command -v apt-get >/dev/null 2>&1; then
@@ -131,18 +133,19 @@ if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] 
             echo "installing uv, for MCP servers started with uvx"
             curl -LsSf https://astral.sh/uv/install.sh | sh || echo "note: uv failed to install"
         fi
-        # The browser mokuzu comes with runs a patched Firefox that is downloaded once.
+        # The browser mokuzu comes with runs a patched Firefox that is downloaded once. Its last Linux
+# arm64 build is firefox-55, so arm64 stays on that core, as mokuzu's browser does.
         uvx="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
         if [ -x "$uvx" ]; then
             echo "downloading the browser's Firefox"
-            "$uvx" --from invisible-playwright invisible-playwright fetch ||
+            "$uvx" --from invisible-playwright $core_pin invisible-playwright fetch ||
                 echo "note: the browser's Firefox failed to download"
         fi
     else
         echo "skipped system packages; for every tool, install them later:
   sudo apt install $(echo $deps)
   curl -LsSf https://astral.sh/uv/install.sh | sh
-  uvx --from invisible-playwright invisible-playwright fetch"
+  uvx --from invisible-playwright ${core_pin:+--with \"invisible-core<56\"} invisible-playwright fetch"
     fi
 fi
 

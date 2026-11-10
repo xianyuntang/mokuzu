@@ -706,6 +706,11 @@ impl Config {
     }
 }
 
+/// The browser's Firefox comes with invisible-core, which stopped shipping a Linux arm64 build
+/// after firefox-55, so on arm64 the browser stays on the last core that has one.
+// ponytail: frozen on firefox-55 on arm64; drop the pin if upstream builds arm64 again.
+const ARM64_CORE: &str = "invisible-core<56";
+
 impl Config {
     /// The MCP servers to start: the configured ones, plus the built-in browser when enabled.
     pub fn mcp_servers(&self) -> BTreeMap<String, McpServer> {
@@ -727,7 +732,15 @@ impl Config {
             .join("stealthfox");
         McpServer {
             command: Some("uvx".to_owned()),
-            args: vec![migrate::BROWSER_PACKAGE.to_owned()],
+            args: if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+                vec![
+                    "--with".to_owned(),
+                    ARM64_CORE.to_owned(),
+                    migrate::BROWSER_PACKAGE.to_owned(),
+                ]
+            } else {
+                vec![migrate::BROWSER_PACKAGE.to_owned()]
+            },
             env: BTreeMap::from([
                 ("STEALTHFOX_HEADLESS".to_owned(), Secret("0".to_owned())),
                 (
@@ -955,7 +968,10 @@ mod tests {
             config.mcp
         );
         let browser = &config.mcp_servers()[BROWSER_SERVER];
-        assert_eq!(browser.args, ["invisible-playwright-mcp"]);
+        assert_eq!(
+            browser.args.last().map(String::as_str),
+            Some("invisible-playwright-mcp")
+        );
         assert_eq!(
             browser.env["STEALTHFOX_PROFILE_DIR"].as_str(),
             "/data/stealthfox"

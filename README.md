@@ -291,6 +291,10 @@ the other system packages, or by hand:
 uvx --from invisible-playwright invisible-playwright fetch   # downloads its Firefox once
 ```
 
+Its last Linux arm64 Firefox is firefox-55, so on arm64 (a Raspberry Pi) mokuzu runs the browser
+on that release's core, and the download needs the same pin:
+`uvx --from invisible-playwright --with "invisible-core<56" invisible-playwright fetch`.
+
 Without them, mokuzu starts without a browser and logs why. With `approve = false` it browses
 without asking, like `fetch_url`; `approve = true` puts each browser action to you, or to the
 reviewer in auto mode. Configs that ran it as `[mcp.servers.browser]` move to the built-in one
