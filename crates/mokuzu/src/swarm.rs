@@ -1,6 +1,7 @@
 //! `cast_crabs` tool: the calling model acts as an orchestrator and dispatches a wave of subagents, each
 //! with its own role, task, and history, that work in parallel with the read-only web and file
-//! tools, plus MCP tools of servers with `approve = false`, and report back. The orchestrator reads the reports and sends further waves as needed.
+//! tools, plus MCP tools of servers with `approve = false`, and report back. Each crab drives a
+//! browser of its own, a copy of the built-in one, so crabs browsing at once don't share a page. The orchestrator reads the reports and sends further waves as needed.
 
 use std::hash::{BuildHasher, RandomState};
 use std::time::Duration;
@@ -360,6 +361,7 @@ async fn work(
         agent.task
     ))];
     let mut last = String::new();
+    let mut browser = tools.mcp.own_browser();
     for round in 1..=AGENT_STEPS {
         step("💭 thinking".to_owned());
         let response = match model
@@ -405,9 +407,12 @@ async fn work(
                 }
                 "read_file" => files::read(tools.config, args).await,
                 "list_dir" => files::list(tools.config, args).await,
-                other => match tools.mcp.call_unapproved(other, args).await {
+                other => match browser.call(other, args).await {
                     Some(output) => output,
-                    None => format!("error: unknown tool `{other}`"),
+                    None => match tools.mcp.call_unapproved(other, args).await {
+                        Some(output) => output,
+                        None => format!("error: unknown tool `{other}`"),
+                    },
                 },
             };
             results.push(UserContent::tool_result_for(

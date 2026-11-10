@@ -121,7 +121,7 @@ fn monitor_connected() -> bool {
 }
 
 /// A random number from std's randomly keyed hasher.
-fn random() -> u64 {
+pub(crate) fn random() -> u64 {
     use std::hash::BuildHasher as _;
     std::collections::hash_map::RandomState::new().hash_one(0u8)
 }

@@ -297,6 +297,11 @@ reviewer in auto mode. Configs that ran it as `[mcp.servers.browser]` move to th
 on update, keeping `approve`; a config without that server keeps the browser off. The name
 `browser` is reserved for it while it is on.
 
+The server drives one page, so with `approve = false` each crab in a cast gets a browser of its
+own instead of sharing one: started the first time the crab browses, from a copy of the profile
+(so it has your sign-ins), and deleted when the crab reports. Nothing a crab does reaches
+`stealthfox/`. Conversations still share the main browser.
+
 On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
 `/browser` replies with a link to a live view of that desktop on your local network (port 22050,
