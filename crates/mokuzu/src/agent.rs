@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 
 use crate::browser;
 use crate::compact;
-use crate::config::{Api, Config, Provider};
+use crate::config::{Api, Config, Effort, Provider};
 use crate::cron;
 use crate::db::{self, Db};
 use crate::document;
@@ -453,10 +453,29 @@ pub(crate) fn request(
         temperature: None,
         max_tokens: Some(u64::from(config.max_tokens)),
         tool_choice: None,
-        additional_params: None,
+        additional_params: thinking(config.api, config.effort),
         output_schema: None,
         record_telemetry_content: false,
     }
+}
+
+/// The request fields that set `effort` in `api`'s format; `None` for `Effort::Auto`. Chat
+/// completions and Gemini top out at `high`, so `xhigh` and `max` go out as that.
+fn thinking(api: Api, effort: Effort) -> Option<Value> {
+    let name = effort.name();
+    let capped = match effort {
+        Effort::Auto => return None,
+        Effort::Xhigh | Effort::Max => "high",
+        _ => name,
+    };
+    Some(match api {
+        Api::Anthropic => serde_json::json!({"output_config": {"effort": name}}),
+        Api::Responses => serde_json::json!({"reasoning": {"effort": name}}),
+        Api::Openai => serde_json::json!({"reasoning_effort": capped}),
+        Api::Gemini => {
+            serde_json::json!({"generationConfig": {"thinkingConfig": {"thinkingLevel": capped}}})
+        }
+    })
 }
 
 /// `messages` with back-to-back user messages, like overheard chat older versions saved, folded into
@@ -1263,6 +1282,44 @@ pub async fn ping(config: &Config) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn effort_reaches_anthropic_and_gemini_in_their_own_fields() {
+        crate::install_tls_provider();
+        for (api, effort, path, want) in [
+            (
+                Api::Anthropic,
+                Effort::Xhigh,
+                "/output_config/effort",
+                "xhigh",
+            ),
+            (
+                Api::Gemini,
+                Effort::Max,
+                "/generationConfig/thinkingConfig/thinkingLevel",
+                "high",
+            ),
+        ] {
+            let (url, server) = crate::oauth::tests::reply_server("{}".to_owned(), false).await;
+            let mut config = Config::parse(&format!(
+                "[opencode-go]\napi_key = \"k\"\nbase_url = \"{url}\"\n"
+            ))
+            .unwrap();
+            (config.api, config.effort) = (api, effort);
+            let model = Model::new(&config, "test").unwrap();
+            // The empty reply fails to parse; only the request body matters here.
+            let _ = model
+                .complete(request(&config, "system", &[Message::user("hi")], &[]))
+                .await;
+            let (_, body) = server.await.unwrap();
+            assert_eq!(body.pointer(path), Some(&Value::from(want)), "{body}");
+        }
+        let config = Config::parse("[opencode-go]\napi_key = \"k\"\n").unwrap();
+        assert!(
+            request(&config, "s", &[], &[]).additional_params.is_none(),
+            "auto sends nothing"
+        );
+    }
 
     #[tokio::test]
     async fn stop_ends_only_a_running_turn() {

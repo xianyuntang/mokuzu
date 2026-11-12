@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListState, Padding, Paragraph, Wrap};
 
-use crate::config::{self, Api, Config, Provider};
+use crate::config::{self, Api, Config, Effort, Provider};
 use crate::oauth;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table};
 
@@ -158,8 +158,9 @@ const VOICE_URL: usize = 38;
 const WEBHOOK_PORT: usize = 39;
 const BROWSER: usize = 40;
 const BROWSER_APPROVE: usize = 41;
+const EFFORT: usize = 42;
 /// First of the rows for already configured MCP servers.
-const MCP_FIRST: usize = 42;
+const MCP_FIRST: usize = 43;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -560,6 +561,12 @@ impl Form {
             }
             .to_owned(),
         ));
+        fields.push(field(
+            STEP_ADVANCED,
+            "Thinking effort",
+            Kind::Select(options(&Effort::ALL.map(Effort::name))),
+            current.map_or(Effort::Auto, |c| c.effort).name().to_owned(),
+        ));
         let mcp_names: Vec<String> = current
             .map(|c| c.mcp.keys().cloned().collect())
             .unwrap_or_default();
@@ -958,6 +965,7 @@ impl Form {
             compact_at_tokens: self
                 .number(COMPACT_AT, config::MIN_COMPACT_AT_TOKENS)?
                 .unwrap_or(config::DEFAULT_COMPACT_AT_TOKENS),
+            effort: self.value(EFFORT),
         })
     }
 
@@ -1535,6 +1543,11 @@ fn help(i: usize) -> (&'static str, &'static str) {
         }
         BASE_URL => "The provider's endpoint. Change it only for a proxy or mirror.",
         MAX_TOKENS => "Longest reply the model may write, in tokens.",
+        EFFORT => {
+            "How hard the model thinks before answering. Higher is smarter, slower, and costs \
+             more. Auto leaves it to the provider. Models that stop at high get high for xhigh \
+             and max."
+        }
         COMPACT_AT => {
             "When the conversation grows past about this many tokens, old tool output is cleared \
              and older turns are summarized. Lower it for models with a smaller context window."
@@ -1695,6 +1708,7 @@ struct ModelOptions {
     base_url: String,
     max_tokens: u32,
     compact_at_tokens: usize,
+    effort: String,
 }
 
 /// MCP servers to remove, and one to add as `(name, table)`.
@@ -1750,6 +1764,7 @@ fn render_toml(answers: &Answers) -> String {
          api = {api}\n\
          max_tokens = {max_tokens}\n\
          compact_at_tokens = {compact_at}\n\
+         effort = {effort}\n\
          \n\
          [{section_name}]\n\
          api_key = {key}\n\
@@ -1762,6 +1777,7 @@ fn render_toml(answers: &Answers) -> String {
         api = quote(&options.api),
         max_tokens = options.max_tokens,
         compact_at = options.compact_at_tokens,
+        effort = quote(&options.effort),
         key = quote(&answers.api_key),
         url = quote(&options.base_url),
     );
@@ -1950,6 +1966,7 @@ mod tests {
                 base_url: "https://proxy.example/v1".to_owned(),
                 max_tokens: 8000,
                 compact_at_tokens: 50_000,
+                effort: "xhigh".to_owned(),
             },
             browser: BrowserOptions {
                 enabled: true,
@@ -1969,8 +1986,8 @@ mod tests {
         assert_eq!(config.api, Api::Openai);
         assert_eq!(config.base_url, "https://proxy.example/v1");
         assert_eq!(
-            (config.max_tokens, config.compact_at_tokens),
-            (8000, 50_000)
+            (config.max_tokens, config.compact_at_tokens, config.effort),
+            (8000, 50_000, Effort::Xhigh)
         );
         assert_eq!(config.browser_screen, (1920, 800));
         assert!(config.browser_enabled && config.browser_approve);
@@ -2012,6 +2029,7 @@ mod tests {
         reopened.fields[VOICE_URL].value = config::DEFAULT_REALTIME_URL.to_owned();
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
+        assert_eq!(reopened.value(EFFORT), "xhigh");
         assert_eq!(reopened.value(VIEWER_PORT), "8765");
         assert_eq!(reopened.value(WEBHOOK_PORT), "22051");
         assert_eq!(reopened.model_options().expect("valid").max_tokens, 8000);
@@ -2240,6 +2258,8 @@ mod tests {
         form.check_step(form.step).expect("search step valid");
 
         form.step = STEP_ADVANCED;
+        assert!(form.visible().contains(&EFFORT));
+        assert_eq!(form.value(EFFORT), "auto", "provider default unless chosen");
         form.fields[TIMEZONE].value = "Taipei".to_owned();
         assert!(form.check_step(form.step).is_err(), "not an IANA name");
         form.fields[TIMEZONE].value = "Asia/Taipei".to_owned();

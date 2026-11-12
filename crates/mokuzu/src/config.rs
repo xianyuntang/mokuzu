@@ -79,6 +79,42 @@ impl Api {
     }
 }
 
+/// How hard the model thinks before it answers; `Auto` sends nothing, so the provider's default
+/// applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Auto,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub const ALL: [Self; 6] = [
+        Self::Auto,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::Xhigh,
+        Self::Max,
+    ];
+
+    /// The name `model.effort` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
 /// Who serves the model, with a separate config section for each provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -248,6 +284,7 @@ struct ModelSection {
     max_tokens: u32,
     /// Estimated history size that triggers compaction.
     compact_at_tokens: usize,
+    effort: Effort,
 }
 
 /// A provider's key and endpoint. OAuth providers leave the key empty and use their fixed endpoint.
@@ -495,6 +532,8 @@ pub struct Config {
     pub max_tokens: u32,
     /// Estimated history size (tokens) at which older turns are summarized.
     pub compact_at_tokens: usize,
+    /// Thinking depth sent with each request.
+    pub effort: Effort,
     pub provider: Provider,
     pub api_key: Secret,
     pub api: Api,
@@ -678,6 +717,7 @@ impl Config {
             model,
             max_tokens: file.model.max_tokens,
             compact_at_tokens,
+            effort: file.model.effort,
             provider,
             api_key,
             base_url,
@@ -982,7 +1022,7 @@ mod tests {
         let clash = format!(
             "version = {VERSION}\ntimezone = \"UTC\"\n{}",
             "[model]\nname = \"m\"\nprovider = \"opencode-go\"\napi = \"openai\"\n\
-             max_tokens = 1000\ncompact_at_tokens = 20000\n\
+             max_tokens = 1000\ncompact_at_tokens = 20000\neffort = \"auto\"\n\
              [opencode-go]\napi_key = \"k\"\nbase_url = \"https://x\"\n\
              [approval]\nmode = \"ask\"\n[log]\nlevel = \"warn\"\n\
              [database]\npath = \"/d.db\"\n\
@@ -1026,6 +1066,11 @@ mod tests {
         assert_eq!(config.model, "minimax-m3");
         assert_eq!(config.max_tokens, 16_000);
         assert_eq!(config.compact_at_tokens, 200_000);
+        assert_eq!(
+            config.effort,
+            Effort::Auto,
+            "old files keep the provider default"
+        );
         assert_eq!(config.base_url, "http://localhost:8080/v1");
         assert_eq!(Api::for_model("glm-5.3"), Api::Openai);
         assert_eq!(Api::for_model("claude-haiku-5-5"), Api::Anthropic);
@@ -1120,6 +1165,7 @@ mod tests {
         Config::parse(&full).expect("valid");
         for key in [
             "max_tokens = ",
+            "effort = ",
             "base_url = ",
             "timezone = ",
             "viewer_port = ",
@@ -1131,6 +1177,10 @@ mod tests {
             let missing = full.replace(&format!("{line}\n"), "");
             assert!(Config::parse(&missing).is_err(), "{key} has no default");
         }
+        let high = full.replace("effort = \"auto\"", "effort = \"high\"");
+        assert_eq!(Config::parse(&high).expect("valid").effort, Effort::High);
+        let typo = full.replace("effort = \"auto\"", "effort = \"extreme\"");
+        assert!(Config::parse(&typo).is_err(), "unknown effort");
     }
 
     #[test]

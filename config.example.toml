@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 4
+version = 5
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -28,6 +28,11 @@ max_tokens = 16000
 # cleared, and if that isn't enough, older turns are replaced by a summary, so requests stay
 # within the model's context window. Lower it for models with a smaller window. At least 10000.
 compact_at_tokens = 200000
+# How hard the model thinks before it answers: "auto" (the provider's default), "low", "medium",
+# "high", "xhigh", or "max". Higher is smarter, slower, and costs more. Sent as output_config.effort
+# (anthropic), reasoning.effort (responses), reasoning_effort (openai), or thinkingLevel (gemini);
+# openai and gemini stop at "high", so "xhigh" and "max" go out as "high".
+effort = "auto"
 
 [opencode-go]
 api_key = "your-opencode-api-key"

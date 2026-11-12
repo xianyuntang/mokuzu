@@ -248,7 +248,7 @@ pub async fn login_with_prompt(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rig_core::message::{AssistantContent, Message};
     use serde_json::{Value, json};
@@ -333,7 +333,7 @@ mod tests {
     }
 
     /// A local HTTP peer exercises Rig's real request conversion and reply parsing.
-    async fn reply_server(
+    pub(crate) async fn reply_server(
         body: String,
         sse: bool,
     ) -> (String, tokio::task::JoinHandle<(String, Value)>) {
@@ -445,7 +445,13 @@ mod tests {
                     },
                 )
             };
-            let config = Config::parse("[opencode-go]\napi_key = \"unused\"\n").unwrap();
+            let mut config = Config::parse("[opencode-go]\napi_key = \"unused\"\n").unwrap();
+            config.effort = crate::config::Effort::Max;
+            config.api = if responses {
+                Api::Responses
+            } else {
+                Api::Openai
+            };
             let mut previous = Message::assistant("Earlier answer");
             if let Message::Assistant { id, .. } = &mut previous {
                 *id = Some("foreign-message-id".to_owned());
@@ -481,6 +487,11 @@ mod tests {
                 "POST /chat/completions "
             }));
             assert_eq!(body["tools"].as_array().unwrap().len(), tool_count);
+            if responses {
+                assert_eq!(body["reasoning"]["effort"], "max", "{body}");
+            } else {
+                assert_eq!(body["reasoning_effort"], "high", "capped: {body}");
+            }
             if chatgpt {
                 assert_eq!(body["stream"], true);
                 assert_eq!(body["store"], false);

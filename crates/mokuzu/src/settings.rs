@@ -9,8 +9,14 @@ use toml_edit::{DocumentMut, TableLike};
 use crate::config::Config;
 use crate::onboarding::MODELS;
 
-/// The only keys the tool may change, as `section.key`. All but `model.name` hold positive integers.
-const KEYS: &[&str] = &["model.name", "model.max_tokens", "model.compact_at_tokens"];
+/// The only keys the tool may change, as `section.key`. `model.name` and `model.effort` hold
+/// strings, the rest positive integers.
+const KEYS: &[&str] = &[
+    "model.name",
+    "model.max_tokens",
+    "model.compact_at_tokens",
+    "model.effort",
+];
 
 pub fn tool() -> ToolDefinition {
     ToolDefinition {
@@ -29,7 +35,8 @@ pub fn tool() -> ToolDefinition {
                 "key": {"type": "string", "enum": KEYS},
                 "value": {
                     "type": ["string", "integer"],
-                    "description": "For set: the new value, a model name or a positive integer.",
+                    "description": "For set: the new value: a model name, an effort (auto, \
+                                    low, medium, high, xhigh, max), or a positive integer.",
                 },
             },
             "required": ["action"],
@@ -41,10 +48,11 @@ pub fn tool() -> ToolDefinition {
 pub fn show(config: &Config) -> String {
     format!(
         "model.name = {}\nmodel.max_tokens = {}\nmodel.compact_at_tokens = {}\n\
-         known models: {}",
+         model.effort = {}\nknown models: {}",
         config.model,
         config.max_tokens,
         config.compact_at_tokens,
+        config.effort.name(),
         MODELS.join(", "),
     )
 }
@@ -65,6 +73,14 @@ pub fn edit(text: &str, key: &str, value: &Value) -> Result<(String, Config)> {
             .filter(|name| !name.is_empty())
             .context("model.name needs a model name")?;
         toml_edit::value(name)
+    } else if key == "model.effort" {
+        // `Config::parse` below rejects a name that is not an effort.
+        toml_edit::value(
+            value
+                .as_str()
+                .context("model.effort needs auto, low, medium, high, xhigh, or max")?
+                .trim(),
+        )
     } else {
         let number = value
             .as_i64()
@@ -121,6 +137,10 @@ mod tests {
         assert!(edit(BASE, "opencode-go.api_key", &json!("x")).is_err());
         assert!(edit(BASE, "discord.allowed_users", &json!(1)).is_err());
         assert!(edit(BASE, "model.max_tokens", &json!(0)).is_err());
+        let (text, config) = edit(BASE, "model.effort", &json!("high")).expect("valid");
+        assert!(text.contains("effort = \"high\""), "{text}");
+        assert_eq!(config.effort, crate::config::Effort::High);
+        assert!(edit(BASE, "model.effort", &json!("extreme")).is_err());
         assert!(edit(BASE, "model.name", &json!(" ")).is_err());
         assert!(edit(BASE, "model.compact_at_tokens", &json!(500)).is_err());
     }

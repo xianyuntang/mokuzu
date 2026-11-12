@@ -12,7 +12,7 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
@@ -21,6 +21,7 @@ const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [
     add_browser,
     built_in_browser,
     drop_guilds,
+    add_effort,
 ];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
@@ -253,6 +254,12 @@ fn drop_guilds(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// 4 → 5: `model.effort` sets how hard the model thinks; `auto` sends nothing, as before.
+fn add_effort(doc: &mut DocumentMut) -> Result<()> {
+    fill(table(doc, &["model"])?, "effort", "auto");
+    Ok(())
+}
+
 /// The table `name` in `parent`, created without a header of its own when missing.
 fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
     parent
@@ -297,12 +304,13 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 4",
+            "version = 5",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
             "max_tokens = 16000",
             "compact_at_tokens = 200000",
+            "effort = \"auto\"",
             "base_url = \"https://opencode.ai/zen/go/v1\"",
             "mode = \"ask\"",
             "level = \"warn\"",
@@ -395,6 +403,23 @@ mod tests {
         );
         assert!(
             new.contains("allowed_users = [1]") && new.contains("[log]"),
+            "{new}"
+        );
+    }
+
+    #[test]
+    fn version_4_keeps_the_provider_default_effort() {
+        let old = "version = 4\n# mine\n[model]\nname = \"m\"\nmax_tokens = 16000\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
+        assert!(
+            new.contains("max_tokens = 16000\neffort = \"auto\""),
+            "{new}"
+        );
+        let set = "version = 4\n[model]\neffort = \"high\"\n";
+        let new = migrate(set).expect("valid").expect("migrated");
+        assert!(
+            new.contains("effort = \"high\"") && !new.contains("auto"),
             "{new}"
         );
     }

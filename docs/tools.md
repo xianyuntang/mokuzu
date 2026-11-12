@@ -211,8 +211,8 @@ page) reach the model as `browser__<tool>`.
 Reads or changes a few of mokuzu's own settings in its config file. Needs approval.
 
 - `get` lists the current values and the known models.
-- `set` changes one of `model.name`, `model.max_tokens`, or `model.compact_at_tokens`. A new
-  model is tested before it is saved.
+- `set` changes one of `model.name`, `model.max_tokens`, `model.compact_at_tokens`, or
+  `model.effort`. A new model is tested before it is saved.
 - Changes apply to every conversation from the next request.
 - It cannot turn on auto approval; only `mokuzu configure` or the config file can.
 
