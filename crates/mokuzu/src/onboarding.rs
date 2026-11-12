@@ -562,7 +562,7 @@ impl Form {
             .to_owned(),
         ));
         fields.push(field(
-            STEP_ADVANCED,
+            STEP_MODEL,
             "Thinking effort",
             Kind::Select(options(&Effort::ALL.map(Effort::name))),
             current.map_or(Effort::Auto, |c| c.effort).name().to_owned(),
@@ -2204,6 +2204,8 @@ mod tests {
             form.check_step(form.step).err().as_deref(),
             Some("API key is required")
         );
+        assert!(form.visible().contains(&EFFORT));
+        assert_eq!(form.value(EFFORT), "auto", "provider default unless chosen");
         form.fields[KEY].value = "k".to_owned();
         assert!(!form.visible().contains(&CUSTOM_MODEL));
         form.fields[MODEL].value = CUSTOM.to_owned();
@@ -2258,8 +2260,6 @@ mod tests {
         form.check_step(form.step).expect("search step valid");
 
         form.step = STEP_ADVANCED;
-        assert!(form.visible().contains(&EFFORT));
-        assert_eq!(form.value(EFFORT), "auto", "provider default unless chosen");
         form.fields[TIMEZONE].value = "Taipei".to_owned();
         assert!(form.check_step(form.step).is_err(), "not an IANA name");
         form.fields[TIMEZONE].value = "Asia/Taipei".to_owned();
