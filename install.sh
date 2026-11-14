@@ -6,7 +6,7 @@
 # Environment:
 #   MOKUZU_VERSION       release tag to install, e.g. v0.1.0 (default: latest)
 #   MOKUZU_INSTALL_DIR   where the binary goes (default: ~/.local/bin)
-#   MOKUZU_DEPS          1 installs the optional system packages with apt without asking, 0 skips
+#   MOKUZU_DEPS          0 skips the optional system packages installed with apt
 #   MOKUZU_DOWNLOAD_BASE base URL holding the release files (default: GitHub releases; for mirrors)
 # The MITTEN_* names from before the project was renamed still work.
 set -eu
@@ -99,53 +99,42 @@ fi
 # fonts for charts, the virtual desktop, its live view and taking control of it, Node for `npx` MCP servers, and the
 # libraries the browser's Firefox links (Ubuntu 24.04 renamed some with a t64 suffix; the name a
 # release lacks is skipped).
-# Asked on first installs with apt and a terminal; MOKUZU_DEPS=1 installs without asking, 0 skips.
-deps="bubblewrap xvfb ffmpeg xdotool python3 python3-pandas python3-numpy python3-matplotlib
+# Installed on first installs with apt; MOKUZU_DEPS=0 skips them.
+deps="bubblewrap xvfb matchbox-window-manager ffmpeg xdotool python3 python3-pandas python3-numpy python3-matplotlib
 python3-openpyxl python3-pil python3-docx python3-pptx python3-requests fonts-noto-cjk nodejs npm
 libgtk-3-0 libgtk-3-0t64 libdbus-glib-1-2 libasound2 libasound2t64 libxtst6 libx11-xcb1"
 core_pin=
 [ "$arch" = aarch64 ] && core_pin="--with invisible-core<56"
-want_deps="${MOKUZU_DEPS:-}"
-if [ -z "$updating" ] && [ "$want_deps" != 0 ] && [ "$os" = unknown-linux-gnu ] &&
+if [ -z "$updating" ] && [ "${MOKUZU_DEPS:-}" != 0 ] && [ "$os" = unknown-linux-gnu ] &&
     command -v apt-get >/dev/null 2>&1; then
-    if [ -z "$want_deps" ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
-        printf 'install the system packages for sandboxed code, charts, the browser desktop, and\nMCP servers (needs sudo)?\n  %s\n[Y/n] ' "$(echo $deps)" >/dev/tty
-        read -r answer </dev/tty || answer=n
-        case "$answer" in [nN]*) want_deps=0 ;; *) want_deps=1 ;; esac
+    echo "installing the system packages for sandboxed code, charts, the browser desktop, and
+MCP servers (needs sudo; MOKUZU_DEPS=0 skips them)"
+    sudo=""
+    [ "$(id -u)" = 0 ] || sudo=sudo
+    $sudo apt-get update -q || echo "note: apt-get update failed; trying the install anyway"
+    # Skip names this release doesn't carry, so one missing package doesn't stop the rest.
+    available=""
+    for pkg in $deps; do
+        # A real candidate, not a virtual name another package provides.
+        if apt-cache policy "$pkg" 2>/dev/null | grep -q 'Candidate: [^(]'; then
+            available="$available $pkg"
+        else
+            echo "note: $pkg is not available here; skipped"
+        fi
+    done
+    # shellcheck disable=SC2086
+    $sudo apt-get install -y $available || echo "note: some system packages failed to install"
+    if ! command -v uvx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+        echo "installing uv, for MCP servers started with uvx"
+        curl -LsSf https://astral.sh/uv/install.sh | sh || echo "note: uv failed to install"
     fi
-    if [ "$want_deps" = 1 ]; then
-        sudo=""
-        [ "$(id -u)" = 0 ] || sudo=sudo
-        $sudo apt-get update -q || echo "note: apt-get update failed; trying the install anyway"
-        # Skip names this release doesn't carry, so one missing package doesn't stop the rest.
-        available=""
-        for pkg in $deps; do
-            # A real candidate, not a virtual name another package provides.
-            if apt-cache policy "$pkg" 2>/dev/null | grep -q 'Candidate: [^(]'; then
-                available="$available $pkg"
-            else
-                echo "note: $pkg is not available here; skipped"
-            fi
-        done
-        # shellcheck disable=SC2086
-        $sudo apt-get install -y $available || echo "note: some system packages failed to install"
-        if ! command -v uvx >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-            echo "installing uv, for MCP servers started with uvx"
-            curl -LsSf https://astral.sh/uv/install.sh | sh || echo "note: uv failed to install"
-        fi
-        # The browser mokuzu comes with runs a patched Firefox that is downloaded once. Its last Linux
-# arm64 build is firefox-55, so arm64 stays on that core, as mokuzu's browser does.
-        uvx="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
-        if [ -x "$uvx" ]; then
-            echo "downloading the browser's Firefox"
-            "$uvx" --from invisible-playwright $core_pin invisible-playwright fetch ||
-                echo "note: the browser's Firefox failed to download"
-        fi
-    else
-        echo "skipped system packages; for every tool, install them later:
-  sudo apt install $(echo $deps)
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-  uvx --from invisible-playwright ${core_pin:+--with \"invisible-core<56\"} invisible-playwright fetch"
+    # The browser mokuzu comes with runs a patched Firefox that is downloaded once. Its last Linux
+    # arm64 build is firefox-55, so arm64 stays on that core, as mokuzu's browser does.
+    uvx="$(command -v uvx || echo "$HOME/.local/bin/uvx")"
+    if [ -x "$uvx" ]; then
+        echo "downloading the browser's Firefox"
+        "$uvx" --from invisible-playwright $core_pin invisible-playwright fetch ||
+            echo "note: the browser's Firefox failed to download"
     fi
 fi
 

@@ -137,7 +137,25 @@ async fn virtual_screen((width, height): (u32, u32)) -> Option<(Child, String)> 
         return None;
     }
     tracing::debug!("virtual desktop on Xvfb display :{number}");
-    Some((child, format!(":{number}")))
+    let display = format!(":{number}");
+    window_manager(&display);
+    Some((child, display))
+}
+
+/// Starts matchbox-window-manager on `display`, which fills the screen with each window, so
+/// popups (a site's sign-in window) are not left at the small size the page asked for and cut
+/// off. Optional: without it windows keep the size they open at. It exits with Xvfb.
+fn window_manager(display: &str) {
+    let spawned = tokio::process::Command::new("matchbox-window-manager")
+        .args(["-use_titlebar", "no"])
+        .env("DISPLAY", display)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(err) = spawned {
+        tracing::debug!("no matchbox-window-manager ({err}); popups keep their own size");
+    }
 }
 
 /// Whether a screen is plugged in. A desktop session runs on a headless Raspberry Pi too, and a

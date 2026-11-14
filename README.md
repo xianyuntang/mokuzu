@@ -69,11 +69,11 @@ The script downloads the release for your platform, checks its SHA-256, and puts
 | --- | --- | --- |
 | `MOKUZU_VERSION` | latest | Release tag to install, e.g. `v0.1.0` |
 | `MOKUZU_INSTALL_DIR` | `~/.local/bin` | Where the binary goes |
-| `MOKUZU_DEPS` | ask | `1` installs the system packages below with apt without asking, `0` skips them |
+| `MOKUZU_DEPS` | `1` | `0` skips the system packages below |
 
-On a first install with apt (Debian, Ubuntu, Raspberry Pi OS), the script offers to install the
+On a first install with apt (Debian, Ubuntu, Raspberry Pi OS), the script installs the
 system packages the optional tools need, with `sudo`: `bubblewrap` and Python libraries for
-`run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb`, `ffmpeg`, and `xdotool` for the
+`run_code`, `fonts-noto-cjk` for charts with Chinese or Japanese text, `xvfb`, `matchbox-window-manager`, `ffmpeg`, and `xdotool` for the
 browser desktop and its live view, and `nodejs`, `npm`, and [uv](https://docs.astral.sh/uv/) for
 MCP servers started with `npx` or `uvx`, and the Firefox of the bundled [browser](#browser). Run `mokuzu install` again afterwards so the background
 service finds them.
@@ -306,7 +306,8 @@ own instead of sharing one: started the first time the crab browses, from a copy
 (so it has your sign-ins), and deleted when the crab reports. Nothing a crab does reaches
 `stealthfox/`. Conversations still share the main browser.
 
-On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`) and gives local
+On Linux without a screen, mokuzu starts a virtual Xvfb desktop (install `xvfb`, plus
+`matchbox-window-manager` so popup windows fill the screen) and gives local
 MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened headed draws there.
 `/browser` replies with a link to a live view of that desktop on your local network (port 22050,
 or `[browser]` `viewer_port`). **Take control** there to use the desktop yourself, for a sign-in
