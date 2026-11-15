@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -21,8 +22,10 @@ jobs:
           # 22.04 builds against an older glibc (2.35), so the binary also runs on older distros.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+            arch: arm64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            arch: amd64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -52,6 +55,27 @@ jobs:
         with:
           name: mokuzu-${{ matrix.target }}
           path: mokuzu-${{ matrix.target }}.tar.gz*
+      # Each runner also builds the image for its own architecture from the binary it just
+      # built; the docker job below joins them under one tag.
+      - name: Stage binary for Docker
+        if: startsWith(github.ref, 'refs/tags/')
+        run: mkdir -p dist/${{ matrix.arch }} && cp target/${{ matrix.target }}/release/mokuzu dist/${{ matrix.arch }}/
+      - uses: docker/setup-buildx-action@v3
+        if: startsWith(github.ref, 'refs/tags/')
+      - uses: docker/login-action@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: docker/build-push-action@v6
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          build-args: BINARY=prebuilt
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}-${{ matrix.arch }}
 
   release:
     needs: build
@@ -69,3 +93,20 @@ jobs:
         run: |
           cat dist/*.sha256 > dist/SHA256SUMS
           gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.tar.gz dist/SHA256SUMS install.sh
+
+  # One multi-arch tag over the per-architecture images the build jobs pushed.
+  docker:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - run: |
+          image=ghcr.io/${{ github.repository }}
+          docker buildx imagetools create -t "$image:$GITHUB_REF_NAME" -t "$image:latest" \
+            "$image:$GITHUB_REF_NAME-amd64" "$image:$GITHUB_REF_NAME-arm64"

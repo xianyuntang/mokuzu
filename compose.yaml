@@ -1,0 +1,21 @@
+# First run: docker compose run --rm mokuzu configure
+# Then:      docker compose up -d
+services:
+  mokuzu:
+    image: ghcr.io/xianyuntang/mokuzu:latest
+    build: .
+    # Host networking, so the /browser link points at this machine's address and the viewer and
+    # webhook ports need no mapping. Linux only.
+    network_mode: host
+    # `/restart` exits mokuzu; this brings it back.
+    restart: unless-stopped
+    # Docker's default seccomp and AppArmor profiles stop bubblewrap from making the run_code
+    # sandbox. Remove these two lines to run without run_code.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    environment:
+      TZ: UTC # your time zone, e.g. Asia/Taipei
+    volumes:
+      - ./config:/root/.config/mokuzu
+      - ./data:/root/.local/share/mokuzu

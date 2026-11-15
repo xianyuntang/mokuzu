@@ -41,6 +41,9 @@ pub fn uninstall() -> Result<()> {
 /// Reinstalls the latest release over this binary with install.sh, then restarts the background
 /// service if one is installed so it picks up the new binary.
 pub fn update() -> Result<()> {
+    if in_container() {
+        bail!("mokuzu runs in a container; pull the new image instead (`docker compose pull`)");
+    }
     let exe = std::env::current_exe().context("failed to locate the mokuzu binary")?;
     let dir = exe
         .parent()
@@ -69,20 +72,27 @@ pub fn restart() -> Result<()> {
     Ok(())
 }
 
-/// Whether `mokuzu install` set up a background service that `/restart` can restart.
+/// Whether `mokuzu install` set up a background service that `/restart` can restart, or mokuzu
+/// runs in a container, whose restart policy brings it back after it exits.
 pub fn installed() -> bool {
-    std::env::home_dir().is_some_and(|home| {
-        if cfg!(target_os = "macos") {
-            plist_path(&home).exists()
-        } else {
-            cfg!(target_os = "linux") && unit_path(&home).exists()
-        }
-    })
+    in_container()
+        || std::env::home_dir().is_some_and(|home| {
+            if cfg!(target_os = "macos") {
+                plist_path(&home).exists()
+            } else {
+                cfg!(target_os = "linux") && unit_path(&home).exists()
+            }
+        })
 }
 
 /// Runs `mokuzu restart` in its own process group, so it outlives the service it stops.
+/// In a container, exits instead: there is no service to restart, and the container's restart
+/// policy (`restart: unless-stopped`) starts mokuzu again.
 pub fn spawn_restart() -> Result<()> {
     use std::os::unix::process::CommandExt as _;
+    if in_container() {
+        std::process::exit(0);
+    }
     let exe = std::env::current_exe().context("failed to locate the mokuzu binary")?;
     Command::new(exe)
         .arg("restart")
@@ -93,6 +103,13 @@ pub fn spawn_restart() -> Result<()> {
         .spawn()
         .context("failed to run `mokuzu restart`")?;
     Ok(())
+}
+
+/// Docker and Podman each leave a marker file at the root of the containers they run.
+fn in_container() -> bool {
+    ["/.dockerenv", "/run/.containerenv"]
+        .iter()
+        .any(|path| Path::new(path).exists())
 }
 
 /// Restarts the background service if one is installed; false if there is none.

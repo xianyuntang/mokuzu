@@ -94,6 +94,26 @@ Or build from source with Rust 1.95 or newer:
 cargo install --git https://github.com/xianyuntang/mokuzu mokuzu
 ```
 
+### Docker
+
+The image at `ghcr.io/xianyuntang/mokuzu` (arm64 and x86_64) comes with every package the
+optional tools need. Put [compose.yaml](compose.yaml) in a folder, then:
+
+```sh
+docker compose run --rm mokuzu configure        # writes ./config/config.toml
+docker compose run --rm mokuzu login chatgpt    # only for a subscription sign-in
+docker compose up -d
+docker compose logs -f
+```
+
+The config and OAuth sign-ins live in `./config`, and the database, workspace, and browser
+profile in `./data`. The compose file uses host networking, so the `/browser` link carries this
+machine's address (Linux only), and relaxes Docker's seccomp and AppArmor profiles so
+bubblewrap can make the `run_code` sandbox; without that, `run_code` is not offered. In the
+container `/restart` exits mokuzu and `restart: unless-stopped` starts it again. To upgrade, run
+`docker compose pull && docker compose up -d`; `mokuzu update` does not apply. `docker build .`
+builds the image from a checkout.
+
 ## Quick start
 
 ```sh
