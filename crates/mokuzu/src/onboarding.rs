@@ -159,8 +159,9 @@ const WEBHOOK_PORT: usize = 39;
 const BROWSER: usize = 40;
 const BROWSER_APPROVE: usize = 41;
 const EFFORT: usize = 42;
+const THREADS: usize = 43;
 /// First of the rows for already configured MCP servers.
-const MCP_FIRST: usize = 43;
+const MCP_FIRST: usize = 44;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -566,6 +567,17 @@ impl Form {
             "Thinking effort",
             Kind::Select(options(&Effort::ALL.map(Effort::name))),
             current.map_or(Effort::Auto, |c| c.effort).name().to_owned(),
+        ));
+        fields.push(field(
+            STEP_DISCORD,
+            "Threads",
+            Kind::Select(options(&[ENABLED, DISABLED])),
+            if discord.is_none_or(|d| d.threads) {
+                ENABLED
+            } else {
+                DISABLED
+            }
+            .to_owned(),
         ));
         let mcp_names: Vec<String> = current
             .map(|c| c.mcp.keys().cloned().collect())
@@ -1044,6 +1056,7 @@ impl Form {
         Ok(DiscordAnswers {
             token: self.required(TOKEN)?,
             allowed_users: parse_user_ids(&self.value(USERS))?,
+            threads: self.fields[THREADS].value == ENABLED,
         })
     }
 
@@ -1493,6 +1506,11 @@ fn help(i: usize) -> (&'static str, &'static str) {
             "Bot token from the Discord Developer Portal › Bot. Turn on Message Content Intent \
              there too, or the bot cannot connect."
         }
+        THREADS => {
+            "Enabled opens a thread for each message in a server text channel, one conversation \
+             per thread. Disabled answers in the channel, so the whole channel is one \
+             conversation. DMs are unaffected."
+        }
         USERS => {
             "Your Discord user ID, the only one mokuzu answers and takes approvals from; \
              comma-separate several for your other accounts. With Developer Mode on, \
@@ -1617,6 +1635,7 @@ fn dropdown_area(body: Rect, row: u16, items: u16) -> Rect {
 struct DiscordAnswers {
     token: String,
     allowed_users: Vec<u64>,
+    threads: bool,
 }
 
 /// The `[voice]` section.
@@ -1840,9 +1859,10 @@ fn render_toml(answers: &Answers) -> String {
     }
     let discord = &answers.discord;
     text.push_str(&format!(
-        "\n[discord]\ntoken = {}\nallowed_users = [{}]\n",
+        "\n[discord]\ntoken = {}\nallowed_users = [{}]\nthreads = {}\n",
         quote(&discord.token),
-        join_ids(&discord.allowed_users)
+        join_ids(&discord.allowed_users),
+        discord.threads
     ));
     if let Some(voice) = &answers.voice {
         text.push_str(&format!(
@@ -1943,6 +1963,7 @@ mod tests {
             discord: DiscordAnswers {
                 token: "tok".to_owned(),
                 allowed_users: vec![1, 22],
+                threads: false,
             },
             voice: Some(VoiceAnswers {
                 api_key: "sk-voice".to_owned(),
@@ -2003,6 +2024,7 @@ mod tests {
         assert_eq!(config.api_key.as_str(), "sk-\"quoted\"");
         let discord = config.discord.as_ref().expect("discord");
         assert_eq!(discord.allowed_users, [1, 22]);
+        assert!(!discord.threads);
         assert!(discord.allows(22) && !discord.allows(2));
         let voice = config.voice.as_ref().expect("voice");
         assert_eq!(
@@ -2062,6 +2084,7 @@ mod tests {
             discord: DiscordAnswers {
                 token: "t".to_owned(),
                 allowed_users: vec![1],
+                threads: true,
             },
             voice: None,
             search: Some(answers),
@@ -2194,6 +2217,8 @@ mod tests {
         let mut form = Form::new(None).expect("form");
         assert_eq!(form.step, STEP_DISCORD, "the bot comes first");
         assert!(form.visible().contains(&TOKEN));
+        assert!(form.visible().contains(&THREADS));
+        assert_eq!(form.value(THREADS), ENABLED, "threads unless turned off");
         assert_eq!(
             form.check_step(form.step).err().as_deref(),
             Some("Bot token is required")

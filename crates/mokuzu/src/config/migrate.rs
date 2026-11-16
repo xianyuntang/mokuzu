@@ -12,7 +12,7 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 5;
+pub const VERSION: i64 = 6;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
@@ -22,6 +22,7 @@ const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [
     built_in_browser,
     drop_guilds,
     add_effort,
+    add_threads,
 ];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
@@ -260,6 +261,14 @@ fn add_effort(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// 5 → 6: `discord.threads` says whether server channel messages open a thread; they always did.
+fn add_threads(doc: &mut DocumentMut) -> Result<()> {
+    if let Some(discord) = doc.get_mut("discord").and_then(Item::as_table_like_mut) {
+        fill(discord, "threads", true);
+    }
+    Ok(())
+}
+
 /// The table `name` in `parent`, created without a header of its own when missing.
 fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
     parent
@@ -304,7 +313,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 5",
+            "version = 6",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -422,6 +431,15 @@ mod tests {
             new.contains("effort = \"high\"") && !new.contains("auto"),
             "{new}"
         );
+    }
+
+    #[test]
+    fn version_5_keeps_opening_threads() {
+        let old = "version = 5\n[discord]\ntoken = \"t\"\nallowed_users = [1]\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(new.contains("allowed_users = [1]\nthreads = true"), "{new}");
+        let none = migrate("version = 5\n").expect("valid").expect("migrated");
+        assert!(!none.contains("discord"), "no section added: {none}");
     }
 
     #[test]

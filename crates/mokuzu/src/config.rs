@@ -516,6 +516,9 @@ pub struct DiscordSection {
     pub token: Secret,
     /// Discord user IDs the bot answers and takes approvals from; everyone else is ignored.
     pub allowed_users: Vec<u64>,
+    /// Whether a message in a server text channel opens a thread for its conversation; when
+    /// false the bot answers in the channel, which is then one conversation.
+    pub threads: bool,
 }
 
 impl DiscordSection {
@@ -1190,20 +1193,29 @@ mod tests {
         assert!(Config::parse(typo).is_err());
         let missing = "[model]\nprovider = \"anthropic\"\n[opencode-go]\napi_key = \"k\"";
         assert!(Config::parse(missing).is_err(), "no [anthropic] section");
-        let open_bot =
-            "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = []";
+        let open_bot = "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = []\nthreads = true";
         assert!(Config::parse(open_bot).is_err());
     }
 
     #[test]
     fn discord_allows_only_listed_users() {
-        let base =
-            "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = [1]\n";
+        let base = "[opencode-go]\napi_key = \"k\"\n[discord]\ntoken = \"t\"\nallowed_users = [1]\n\
+                    threads = false\n";
         let discord = Config::parse(base)
             .expect("valid")
             .discord
             .expect("discord configured");
         assert!(discord.allows(1) && !discord.allows(2));
+        assert!(!discord.threads);
+        let unset = format!(
+            "version = {}\n{}",
+            migrate::VERSION,
+            base.replace("threads = false\n", "")
+        );
+        assert!(
+            Config::parse(&unset).is_err(),
+            "threads must be spelled out"
+        );
         assert!(
             Config::parse(&format!(
                 "{base}[discord.guilds.100]\nallowed_users = [2]\n"

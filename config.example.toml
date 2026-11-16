@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 5
+version = 6
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -121,6 +121,9 @@ token = "your-bot-token"
 # Your Discord user ID: mokuzu is a personal agent, so it answers and takes approvals only from
 # the IDs listed here (it can read files on this machine), and ignores everyone else.
 allowed_users = [123456789012345678]
+# A message in a server text channel opens a thread, one conversation each. false answers in the
+# channel instead, so the whole channel is one conversation. DMs are unaffected. Default true.
+threads = true
 # The bot answers you in DMs and in every server channel it can read, no @mention needed.
 # Enable the MESSAGE CONTENT intent for the bot in the Developer Portal, or it cannot connect.
 

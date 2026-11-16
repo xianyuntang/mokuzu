@@ -1,5 +1,5 @@
 //! Discord gateway: one agent per DM or thread. A message in a server text channel opens a new
-//! thread for its conversation. Memory is shared by every conversation. Only allow-listed
+//! thread for its conversation, unless `discord.threads` is off and the channel is the conversation. Memory is shared by every conversation. Only allow-listed
 //! users are heard, and they approve actions with buttons. With `[voice]` set, `/voice` or joining one of its `channels` starts a voice call
 //! (see `voice`).
 
@@ -829,12 +829,12 @@ async fn restart(http: &Http, channel: ChannelId) {
     }
 }
 
-/// Where `msg` is answered: a new thread off a message in a server text channel, otherwise
-/// the channel itself. A new thread starts with the message's first line as its name, and the
+/// Where `msg` is answered: a new thread off a message in a server text channel (when
+/// `discord.threads` is on), otherwise the channel itself. A new thread starts with the message's first line as its name, and the
 /// model renames it in the background.
 async fn route(ctx: &Context, msg: &Message, content: &str, config: &Config) -> Result<ChannelId> {
     let here = msg.channel_id;
-    if msg.guild_id.is_none() {
+    if msg.guild_id.is_none() || config.discord.as_ref().is_some_and(|d| !d.threads) {
         return Ok(here);
     }
     // ponytail: one channel lookup per server message; enable serenity's cache if volume grows.
