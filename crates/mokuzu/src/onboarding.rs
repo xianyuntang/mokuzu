@@ -1618,16 +1618,19 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
 }
 
 /// Places the dropdown just under field row `row`, aligned with the value column.
+/// Below the field, kept inside `body`: a long list is cut to fit and scrolls with the selection,
+/// and one near the bottom moves up, so every option (like "Custom…" at the end) can be reached.
 fn dropdown_area(body: Rect, row: u16, items: u16) -> Rect {
     let x = body.x + 1 + 2 + 21;
-    let y = body.y + 1 + row + 1;
+    let height = (items + 2).min(body.height);
+    let y = (body.y + 1 + row + 1).min(body.bottom().saturating_sub(height));
     let [area] = Layout::horizontal([Constraint::Length(28)])
         .flex(Flex::Start)
         .areas(Rect::new(
             x,
             y,
             body.width.saturating_sub(x - body.x),
-            items + 2,
+            height,
         ));
     area
 }
@@ -2405,5 +2408,16 @@ mod tests {
         assert_eq!(parse_user_ids(" 1, 2 ,"), Ok(vec![1, 2]));
         assert!(parse_user_ids("abc").is_err());
         assert!(parse_user_ids(" , ").is_err());
+    }
+
+    #[test]
+    fn dropdown_stays_inside_the_screen() {
+        let body = Rect::new(0, 0, 80, 20);
+        let long = dropdown_area(body, 3, MODELS.len() as u16 + 1);
+        assert!(long.bottom() <= body.bottom() && long.height == body.height);
+        let low = dropdown_area(body, 15, 4);
+        assert_eq!((low.height, low.bottom()), (6, body.bottom()));
+        let short = dropdown_area(body, 1, 2);
+        assert_eq!((short.y, short.height), (3, 4));
     }
 }
