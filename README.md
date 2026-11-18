@@ -15,8 +15,8 @@ Mokuzu is an open-source personal AI assistant that runs on your own machine, su
 Raspberry Pi, and talks with you as a Discord bot, in text and in voice channels. It reads files
 and web pages, searches the web, remembers what you tell it, calls tools on MCP servers such as
 Linear or GitHub, runs code in a sandbox, and runs scheduled jobs and webhooks. It works with
-Claude through the Anthropic API, the models on OpenCode Go, or GitHub Copilot and OpenAI
-ChatGPT subscriptions through OAuth. It is one Rust binary.
+Claude through the Anthropic API, the models on OpenCode Go or OpenRouter, or GitHub Copilot and
+OpenAI ChatGPT subscriptions through OAuth. It is one Rust binary.
 
 Mokuzu's own tools only read, except that it can write files, and run code in a sandbox, in its
 own workspace folder.
@@ -123,7 +123,7 @@ mokuzu install     # run the Discord bot in the background
 
 `mokuzu configure` writes `~/.config/mokuzu/config.toml`. Its **Discord** page takes the bot token
 and your user ID (see [Discord](#discord)), and its **Model** page your provider, API key, and
-model: OpenCode Go or Anthropic with an API key, or GitHub Copilot or OpenAI ChatGPT with OAuth
+model: OpenCode Go, Anthropic, or OpenRouter with an API key, or GitHub Copilot or OpenAI ChatGPT with OAuth
 (see below). Each provider keeps its own credentials, so switching between them never reuses
 another provider's key. Those two pages are required; voice
 calls, web search, MCP servers, and the rest are optional. `mokuzu` alone runs the bot in the
@@ -374,7 +374,7 @@ OS. Other platforms build from source with `cargo install`.
 
 ### Which LLMs does it work with?
 
-Claude through an Anthropic API key, the models on OpenCode Go, or models available to your
+Claude through an Anthropic API key, the models on OpenCode Go or OpenRouter, or models available to your
 GitHub Copilot or OpenAI ChatGPT subscription, chosen in `mokuzu configure`.
 Voice calls and voice message transcripts also need an OpenAI API key.
 

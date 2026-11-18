@@ -57,6 +57,17 @@ const COPILOT_MODELS: &[&str] = &[
     "claude-haiku-5.5",
 ];
 const CHATGPT_MODELS: &[&str] = &["gpt-6.1-sol", "gpt-6-luna"];
+const OPENROUTER: &str = "OpenRouter";
+/// A few OpenRouter model IDs; any `vendor/model` it lists works through Custom….
+const OPENROUTER_MODELS: &[&str] = &[
+    "anthropic/claude-sonnet-5.5",
+    "anthropic/claude-opus-5.5",
+    "openai/gpt-6-luna",
+    "google/gemini-4-argon",
+    "deepseek/deepseek-v4-pro",
+    "moonshotai/kimi-k3",
+    "z-ai/glm-5.3",
+];
 const CUSTOM: &str = "Custom…";
 const ENABLED: &str = "Enabled";
 const DISABLED: &str = "Disabled";
@@ -211,6 +222,7 @@ fn models(provider: Provider) -> &'static [&'static str] {
         Provider::Anthropic => ANTHROPIC_MODELS,
         Provider::GithubCopilot => COPILOT_MODELS,
         Provider::Chatgpt => CHATGPT_MODELS,
+        Provider::Openrouter => OPENROUTER_MODELS,
     }
 }
 
@@ -220,6 +232,7 @@ fn provider_name(provider: Provider) -> &'static str {
         Provider::Anthropic => ANTHROPIC,
         Provider::GithubCopilot => GITHUB_COPILOT,
         Provider::Chatgpt => CHATGPT,
+        Provider::Openrouter => OPENROUTER,
     }
 }
 
@@ -231,6 +244,8 @@ fn api_options(provider: Provider) -> Vec<String> {
     let mut apis = vec![API_AUTO];
     if provider == Provider::GithubCopilot {
         apis.extend(["openai", "responses"]);
+    } else if provider == Provider::Openrouter {
+        apis.extend(["openai", "anthropic", "responses"]);
     } else {
         apis.extend(Api::ALL.map(Api::name));
     }
@@ -277,7 +292,13 @@ impl Form {
             field(
                 STEP_MODEL,
                 "Provider",
-                Kind::Select(options(&[OPENCODE_GO, ANTHROPIC, GITHUB_COPILOT, CHATGPT])),
+                Kind::Select(options(&[
+                    OPENCODE_GO,
+                    ANTHROPIC,
+                    OPENROUTER,
+                    GITHUB_COPILOT,
+                    CHATGPT,
+                ])),
                 provider_name(provider).to_owned(),
             ),
             field(
@@ -632,7 +653,7 @@ impl Form {
                 BROWSER_APPROVE => self.fields[BROWSER].value == ENABLED,
                 API => matches!(
                     self.provider(),
-                    Provider::OpencodeGo | Provider::GithubCopilot
+                    Provider::OpencodeGo | Provider::GithubCopilot | Provider::Openrouter
                 ),
                 KEY | BASE_URL => !self.provider().uses_oauth(),
                 _ => true,
@@ -834,6 +855,7 @@ impl Form {
             ANTHROPIC => Provider::Anthropic,
             GITHUB_COPILOT => Provider::GithubCopilot,
             CHATGPT => Provider::Chatgpt,
+            OPENROUTER => Provider::Openrouter,
             _ => Provider::OpencodeGo,
         }
     }
@@ -1499,7 +1521,7 @@ const FOCUS_BG: Color = Color::Indexed(236);
 /// Help for field `i`, and a warning to show with it ("" for none).
 fn help(i: usize) -> (&'static str, &'static str) {
     let about = match i {
-        KEY => "Your OpenCode Go or Anthropic API key. ^R shows it.",
+        KEY => "Your OpenCode Go, Anthropic, or OpenRouter API key. ^R shows it.",
         MODEL => "The model Mokuzu talks with. Pick Custom… to type another model ID.",
         CUSTOM_MODEL => "A model ID your provider serves.",
         TOKEN => {
@@ -1592,7 +1614,7 @@ fn help(i: usize) -> (&'static str, &'static str) {
              internet need a tunnel in front of it. Takes effect when mokuzu next starts."
         }
         PROVIDER => {
-            "OpenCode Go and Anthropic use API keys. For GitHub Copilot or OpenAI ChatGPT, \
+            "OpenCode Go, Anthropic, and OpenRouter use API keys. For GitHub Copilot or OpenAI ChatGPT, \
              choose Sign in… or press ^L to authorize in your browser. OAuth credentials \
              stay separate from API keys and from other providers."
         }
@@ -2151,6 +2173,32 @@ mod tests {
         reopened.switch_provider(Provider::Anthropic);
         assert_eq!(reopened.value(KEY), "o-key");
         assert_eq!(reopened.value(BASE_URL), config::DEFAULT_BASE_URL);
+    }
+
+    #[test]
+    fn openrouter_renders_its_section() {
+        let mut form = Form::new(None).expect("form");
+        form.fields[PROVIDER].value = OPENROUTER.to_owned();
+        form.switch_provider(Provider::OpencodeGo);
+        assert_eq!(form.value(BASE_URL), config::OPENROUTER_BASE_URL);
+        assert_eq!(form.value(MODEL), Provider::Openrouter.default_model());
+        form.step = STEP_ADVANCED;
+        assert!(form.visible().contains(&API));
+        form.fields[KEY].value = "sk-or".to_owned();
+        form.fields[TOKEN].value = "t".to_owned();
+        form.fields[USERS].value = "1".to_owned();
+        let text = render_toml(&form.answers().expect("valid"));
+        assert!(
+            text.contains("[openrouter]\napi_key = \"sk-or\"\n"),
+            "{text}"
+        );
+        let config = Config::parse(&text).expect("valid");
+        assert_eq!(config.provider, Provider::Openrouter);
+        assert_eq!(config.api, Api::Openai);
+        assert_eq!(
+            Form::new(Some(&config)).expect("form").value(PROVIDER),
+            OPENROUTER
+        );
     }
 
     #[test]

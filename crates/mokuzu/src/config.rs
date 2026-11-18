@@ -15,6 +15,7 @@ pub use migrate::migrate;
 
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 pub const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
+pub const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 pub const DEFAULT_MAX_TOKENS: u32 = 16_000;
 pub const DEFAULT_COMPACT_AT_TOKENS: usize = 200_000;
 pub const MIN_COMPACT_AT_TOKENS: usize = 10_000;
@@ -126,14 +127,17 @@ pub enum Provider {
     GithubCopilot,
     /// OpenAI's ChatGPT subscription, through Rig's Codex OAuth provider.
     Chatgpt,
+    /// OpenRouter, one API key for many vendors' models (`vendor/model` IDs).
+    Openrouter,
 }
 
 impl Provider {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::OpencodeGo,
         Self::Anthropic,
         Self::GithubCopilot,
         Self::Chatgpt,
+        Self::Openrouter,
     ];
 
     pub fn uses_oauth(self) -> bool {
@@ -157,6 +161,7 @@ impl Provider {
             }
             Self::GithubCopilot => Api::Openai,
             Self::Chatgpt => Api::Responses,
+            Self::Openrouter => Api::Openai,
         }
     }
 
@@ -167,6 +172,7 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::GithubCopilot => "github-copilot",
             Self::Chatgpt => "chatgpt",
+            Self::Openrouter => "openrouter",
         }
     }
 
@@ -176,6 +182,7 @@ impl Provider {
             Self::Anthropic => ANTHROPIC_BASE_URL,
             Self::GithubCopilot => "https://api.githubcopilot.com",
             Self::Chatgpt => "https://chatgpt.com/backend-api/codex",
+            Self::Openrouter => OPENROUTER_BASE_URL,
         }
     }
 
@@ -185,6 +192,7 @@ impl Provider {
             Self::Anthropic => "claude-opus-5-5",
             Self::GithubCopilot => "gpt-4.1",
             Self::Chatgpt => "gpt-6.1-sol",
+            Self::Openrouter => "anthropic/claude-sonnet-5.5",
         }
     }
 }
@@ -232,6 +240,7 @@ struct File {
     #[serde(rename = "github-copilot")]
     github_copilot: Option<ProviderSection>,
     chatgpt: Option<ProviderSection>,
+    openrouter: Option<ProviderSection>,
     #[serde(default)]
     tools: ToolsSection,
     #[serde(default)]
@@ -615,6 +624,7 @@ impl Config {
             (Provider::Anthropic, file.anthropic),
             (Provider::GithubCopilot, file.github_copilot),
             (Provider::Chatgpt, file.chatgpt),
+            (Provider::Openrouter, file.openrouter),
         ] {
             let Some(section) = section else { continue };
             let api_key = match section.api_key {
@@ -635,7 +645,8 @@ impl Config {
         }
         if keys.is_empty() {
             bail!(
-                "add a model provider section: [opencode-go], [anthropic], [github-copilot], or [chatgpt]"
+                "add a model provider section: [opencode-go], [anthropic], [github-copilot], [chatgpt], \
+                 or [openrouter]"
             );
         }
         for (provider, key) in &keys {
@@ -707,6 +718,9 @@ impl Config {
         }
         if provider == Provider::GithubCopilot && !matches!(api, Api::Openai | Api::Responses) {
             bail!("[github-copilot] requires model.api = \"openai\" or \"responses\"");
+        }
+        if provider == Provider::Openrouter && api == Api::Gemini {
+            bail!("[openrouter] does not speak model.api = \"gemini\"");
         }
         let approval = match (file.approval.mode, file.approval.model) {
             (ApprovalMode::Ask, None) => Approval::Ask,
@@ -912,6 +926,18 @@ mod tests {
         let config = Config::parse(example).expect("valid");
         assert_eq!(config.base_url, "https://opencode.ai/zen/go/v1");
         assert_eq!(config.api, Api::Anthropic);
+    }
+
+    #[test]
+    fn openrouter_defaults_to_chat_completions() {
+        let key = "[openrouter]\napi_key = \"or\"\n";
+        let text = format!("[model]\nname = \"z-ai/glm-5.3\"\napi = \"openai\"\n{key}");
+        let config = Config::parse(&text).expect("valid");
+        assert_eq!(config.provider, Provider::Openrouter);
+        assert_eq!(config.base_url, OPENROUTER_BASE_URL);
+        assert_eq!(config.api_key.as_str(), "or");
+        let gemini = format!("[model]\nname = \"m\"\napi = \"gemini\"\n{key}");
+        assert!(Config::parse(&gemini).is_err());
     }
 
     #[test]
