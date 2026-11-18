@@ -160,12 +160,52 @@ impl Drop for Running {
 /// Starts every due job, forever. A job missed while mokuzu was down runs once on startup.
 async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     let mut tick = tokio::time::interval(CRON_TICK);
+    // Conversations already kept open for their jobs since startup.
+    let mut kept = HashSet::new();
     loop {
         tick.tick().await;
+        if let Err(err) = keep_job_threads(&db, &http, &mut kept).await {
+            tracing::warn!("failed to keep job threads open: {err:#}");
+        }
         if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
             tracing::warn!("scheduler tick failed: {err:#}");
         }
     }
+}
+
+/// Makes each thread a job posts to archive after a week idle instead of an hour, so it stays
+/// in the channel list between runs. Each target is tried once per startup.
+async fn keep_job_threads(db: &Db, http: &Http, kept: &mut HashSet<String>) -> Result<()> {
+    for job in db.jobs().await? {
+        if !kept.insert(job.target.clone()) {
+            continue;
+        }
+        let Some(channel) = job
+            .target
+            .strip_prefix("discord:")
+            .and_then(|id| id.parse().ok())
+            .map(ChannelId::new)
+        else {
+            continue;
+        };
+        let Some(thread) = channel.to_channel(http).await?.guild() else {
+            continue; // A DM.
+        };
+        if thread
+            .thread_metadata
+            .is_some_and(|m| m.auto_archive_duration != AutoArchiveDuration::OneWeek)
+        {
+            channel
+                .edit_thread(
+                    http,
+                    EditThread::new()
+                        .archived(false)
+                        .auto_archive_duration(AutoArchiveDuration::OneWeek),
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// An `Io` posting to the Discord conversation `target` with nobody there to approve anything:

@@ -192,7 +192,7 @@ How it behaves:
   other accounts, if any). For other people, run a separate mokuzu with its own config, bot,
   and database (`mokuzu --config <path> serve`), so nothing of yours is shared.
 - A message in a server channel opens a thread, and each thread is its own conversation.
-  Idle threads archive after an hour. Set `discord.threads = false` to answer in the channel
+  Idle threads archive after an hour, or a week once a job posts there. Set `discord.threads = false` to answer in the channel
   instead, making the channel one conversation.
 - Memory and skills are one set, shared by all threads, DMs, voice calls, and scheduled runs,
   whichever of your listed accounts you write from.
