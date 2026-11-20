@@ -266,6 +266,7 @@ Logs:
 | `cron` | Schedules a named prompt to run later, once (`at`) or on a cron expression, in the config's `timezone` (restart `mokuzu serve` after changing it). Each run starts a fresh conversation and posts its reply in the Discord channel or thread where the job was made. Discord only; jobs run while `mokuzu serve` is up, and a run missed while it was down happens once on startup. Approval prompts during a run are denied unless approval is set to auto. A job's instructions are shown when it is made or changed; ask to change its instructions or timing, remove it, or give it a trial run now (posted where the job was made, schedule unchanged). To watch for something, ask for a repeating job that checks it: a run that replies exactly `NO_REPLY` posts nothing, so it speaks only once the thing happens, then removes its own job. | No |
 | `webhook` | With `[webhook]` set, makes a named webhook: a secret URL, `http://<this machine>:<port>/hook/<secret>`, that outside services POST to. Each request runs the webhook's instructions with the request body (up to 64 KB, given to the model as untrusted data) in a fresh conversation, and posts the reply where the webhook was made. Requests to one webhook run one at a time. Approval prompts during a run are denied, even in auto mode. The port is on your local network; put a tunnel in front of it for services on the internet. Discord only. | No |
 | `browser__*` | The [built-in browser](#browser): opens and works pages in a real Firefox, for signed-in sites and pages that block `fetch_url`. | With `[browser] approve = true` |
+| `desktop` | Sees and uses the [virtual desktop](#browser) the browser draws on: screenshots, mouse clicks and drags, scrolling, keys, typing. Every call returns a screenshot. For what the `browser__*` tools can't reach, such as a captcha or a canvas. Offered only when the virtual desktop is up (needs `ffmpeg`, and `xdotool` to act). | With `[browser] approve = true` (screenshots never ask) |
 | `settings` | Reads or changes the model and a few limits. | Yes |
 | MCP tools | Any tool from the MCP servers you connect. | Yes, per server |
 
@@ -333,9 +334,12 @@ MCP servers its `DISPLAY` unless their `env` sets one, so a browser opened heade
 `/browser` replies with a link to a live view of that desktop on your local network (port 22050,
 or `[browser]` `viewer_port`). **Take control** there to use the desktop yourself, for a sign-in
 or a captcha: clicks, scrolling, and keys go to it, and a text field takes typing from a phone or
-an input method. Meanwhile the agent's browser actions wait until you **Hand back**, or for 30
+an input method. Meanwhile the agent's browser and `desktop` actions wait until you **Hand back**, or for 30
 seconds after the page closes. Anyone with the link can do the same, so share it with no one. The
 view needs `ffmpeg`, and taking control `xdotool`. `[browser]` `width` and `height` set the desktop's size.
+The `desktop` tool gives the model the same screen: it looks at screenshots (scaled down to fit
+1280x800) and clicks, scrolls, and types with `xdotool`, asking first like the browser when
+`[browser] approve = true`.
 
 ## Approval
 

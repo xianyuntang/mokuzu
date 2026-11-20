@@ -1065,6 +1065,7 @@ impl Agent {
             .chain(images.into_iter().map(UserContent::Image))
             .collect();
         self.messages.push(Message::User { content });
+        let desktop = browser::available().await;
         let extra: Vec<ToolDefinition> = self
             .schedules()
             .then(cron::tool)
@@ -1072,6 +1073,7 @@ impl Agent {
             .chain(self.webhooks().map(|_| webhook::tool()))
             .chain(sandbox::available().then(sandbox::tool))
             .chain(self.search.is_some().then(swarm::tool))
+            .chain(desktop.then(browser::tool))
             .chain([files::send_tool()])
             .chain(self.mcp.tools().iter().cloned())
             .collect();
@@ -1166,6 +1168,13 @@ impl Agent {
                         let (output, pages) =
                             document::view(&self.config, &self.fetcher, args).await;
                         images.extend(pages.into_iter().map(UserContent::Image));
+                        output
+                    }
+                    "desktop" => {
+                        let (output, shots) =
+                            browser::run(&call.function.arguments, self.config.browser_approve, io)
+                                .await?;
+                        images.extend(shots.into_iter().map(UserContent::Image));
                         output
                     }
                     "memory" => self.remember(&call.function.arguments, io).await?,

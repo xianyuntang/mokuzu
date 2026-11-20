@@ -83,7 +83,7 @@ async fn serve(connection: TcpStream, token: &str) -> Result<()> {
     let allowed = query
         .get("token")
         .is_some_and(|given| same(given.as_bytes(), token.as_bytes()));
-    let display = screen().await;
+    let display = screen().await.map(|(display, _)| display);
     let (status, kind, content) = if allowed {
         match (method, url.path(), display) {
             ("GET", "/stream", Some(display)) => {
@@ -183,8 +183,11 @@ async fn stream(display: &str, fps: u8, write: &mut OwnedWriteHalf) -> Result<()
     Ok(())
 }
 
-/// Plays one input event from the viewer on `display`.
-async fn input(display: &str, query: &HashMap<Cow<'_, str>, Cow<'_, str>>) -> Result<()> {
+/// Plays one input event from the viewer, or from the `desktop` tool, on `display`.
+pub(super) async fn input(
+    display: &str,
+    query: &HashMap<Cow<'_, str>, Cow<'_, str>>,
+) -> Result<()> {
     let (args, text) = xdotool_args(query)?;
     let mut xdotool = tokio::process::Command::new("xdotool")
         .env("DISPLAY", display)

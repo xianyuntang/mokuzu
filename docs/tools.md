@@ -206,6 +206,19 @@ page) reach the model as `browser__<tool>`.
 - It is set up on the MCP page of `mokuzu configure`, under **Built-in browser**, and takes
   effect when mokuzu next starts.
 
+### `desktop`
+
+Sees and uses the virtual Xvfb desktop the built-in browser draws on, the one `/browser` shows.
+Offered only when that desktop is up, on Linux without a screen with `ffmpeg` installed.
+
+- `screenshot` looks at the screen. `click`, `move`, `down`, `up` (press and release, for drags),
+  `key` (e.g. `ctrl+l`), and `type` act on it with `xdotool`, then return a screenshot.
+- Buttons 4 to 7 scroll; `count` repeats an action, e.g. 2 for a double-click.
+- Screenshots are scaled down to fit 1280x800; the model's coordinates are scaled back.
+- `[browser] approve = true` puts each action to you, or to the reviewer in auto mode;
+  screenshots never ask. Actions wait while you control the desktop in `/browser`.
+- Prefer `browser__*` for web pages; this is for what they can't reach, like a captcha or a canvas.
+
 ### `settings`
 
 Reads or changes a few of mokuzu's own settings in its config file. Needs approval.
