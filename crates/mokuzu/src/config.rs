@@ -450,6 +450,10 @@ pub struct McpServer {
     pub token: Option<Secret>,
     /// Ask the user before each call; turn off only for servers that can't change anything.
     pub approve: bool,
+    /// Hold the server's tools back until the model opens it with `use_server`.
+    pub on_demand: bool,
+    /// What the server is for, which tells the model when to open an on-demand one.
+    pub when: String,
 }
 
 impl McpServer {
@@ -471,6 +475,12 @@ impl McpServer {
         if self.command.is_some() && self.token.is_some() {
             bail!(
                 "mcp.servers.{name}.token is for `url` servers; pass tokens to `command` in `env`"
+            );
+        }
+        if self.on_demand && self.when.trim().is_empty() {
+            bail!(
+                "mcp.servers.{name}.when must say what the server is for, so the model knows \
+                 when to open it (on_demand = true)"
             );
         }
         Ok(())
@@ -808,6 +818,8 @@ impl Config {
             url: None,
             token: None,
             approve: self.browser_approve,
+            on_demand: false,
+            when: String::new(),
         }
     }
 }
@@ -978,11 +990,19 @@ mod tests {
         .expect("valid");
         assert!(config.mcp["fs"].approve);
         assert!(!config.mcp["remote"].approve);
+        assert!(!config.mcp["fs"].on_demand, "always open unless set");
+        let held = Config::parse(&format!(
+            "{base}[mcp.servers.chrome]\ncommand = \"npx\"\non_demand = true\nwhen = \"Only for LINE.\"\n"
+        ))
+        .expect("valid");
+        assert!(held.mcp["chrome"].on_demand);
+        assert_eq!(held.mcp["chrome"].when, "Only for LINE.");
         for bad in [
             "[mcp.servers.fs]\n",
             "[mcp.servers.fs]\ncommand = \"x\"\nurl = \"https://e.com\"\n",
             "[mcp.servers.fs]\nurl = \"ftp://e.com\"\n",
             "[mcp.servers.\"a b\"]\ncommand = \"x\"\n",
+            "[mcp.servers.fs]\ncommand = \"x\"\non_demand = true\n",
         ] {
             assert!(Config::parse(&format!("{base}{bad}")).is_err(), "{bad}");
         }
@@ -1056,7 +1076,8 @@ mod tests {
              [approval]\nmode = \"ask\"\n[log]\nlevel = \"warn\"\n\
              [database]\npath = \"/d.db\"\n\
              [browser]\nenabled = true\napprove = false\nwidth = 1280\nheight = 800\n\
-             viewer_port = 22050\n[mcp.servers.browser]\nurl = \"https://x\"\napprove = true\n"
+             viewer_port = 22050\n[mcp.servers.browser]\nurl = \"https://x\"\napprove = true\n\
+             on_demand = false\nwhen = \"\"\n"
         );
         let err = Config::parse(&clash).expect_err("name clash");
         assert!(err.to_string().contains("built-in browser"), "{err:#}");

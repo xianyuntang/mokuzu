@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 6
+version = 7
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -110,17 +110,31 @@ viewer_port = 22050
 
 # Optional. MCP servers whose tools the model can call, named `<server>__<tool>`.
 # `approve = true` asks you before each call; set false only for servers that can't change anything.
+# `on_demand = true` holds a server's tools back until the model opens the server (the
+# `use_server` tool), so they stay out of reach, and out of the context, for everything the
+# server is not meant for; `when` then says what it is for. Otherwise `when` is unused.
 # A local server over stdio:
 # [mcp.servers.github]
 # command = "npx"
 # args = ["-y", "@modelcontextprotocol/server-github"]
 # env = { GITHUB_PERSONAL_ACCESS_TOKEN = "ghp_..." }
 # approve = true
+# on_demand = false
+# when = ""
 # A remote server over streamable HTTP, with an optional bearer token:
 # [mcp.servers.docs]
 # url = "https://example.com/mcp"
 # token = "secret"
 # approve = false
+# on_demand = false
+# when = ""
+# A server for one kind of task, opened only when a task calls for it:
+# [mcp.servers.chrome]
+# command = "npx"
+# args = ["-y", "chrome-devtools-mcp", "--browserUrl", "http://127.0.0.1:9222"]
+# approve = true
+# on_demand = true
+# when = "Only for Chrome extensions, or when the user asks for Chrome. Web pages go through browser__*."
 
 # Required: the Discord bot mokuzu talks through, by DM and in server channels.
 [discord]

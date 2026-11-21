@@ -12,7 +12,7 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 6;
+pub const VERSION: i64 = 7;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
@@ -23,6 +23,7 @@ const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [
     drop_guilds,
     add_effort,
     add_threads,
+    add_on_demand,
 ];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
@@ -269,6 +270,22 @@ fn add_threads(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// 6 → 7: `on_demand` holds an MCP server's tools back until the model opens it, told when by
+/// `when`; every server's tools were always offered.
+fn add_on_demand(doc: &mut DocumentMut) -> Result<()> {
+    let servers = doc
+        .get_mut("mcp")
+        .and_then(|mcp| mcp.get_mut("servers"))
+        .and_then(Item::as_table_like_mut);
+    for (_, server) in servers.into_iter().flat_map(|servers| servers.iter_mut()) {
+        if let Some(server) = server.as_table_like_mut() {
+            fill(server, "on_demand", false);
+            fill(server, "when", "");
+        }
+    }
+    Ok(())
+}
+
 /// The table `name` in `parent`, created without a header of its own when missing.
 fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
     parent
@@ -313,7 +330,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 6",
+            "version = 7",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -440,6 +457,25 @@ mod tests {
         assert!(new.contains("allowed_users = [1]\nthreads = true"), "{new}");
         let none = migrate("version = 5\n").expect("valid").expect("migrated");
         assert!(!none.contains("discord"), "no section added: {none}");
+    }
+
+    #[test]
+    fn version_6_keeps_every_server_open() {
+        let old = "version = 6\n[mcp.servers.fs]\ncommand = \"fs\"\napprove = true\n\n\
+                   [mcp.servers.held]\nurl = \"https://x\"\napprove = true\non_demand = true\n\
+                   when = \"Only for x.\"\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(
+            new.contains("approve = true\non_demand = false\nwhen = \"\""),
+            "{new}"
+        );
+        assert!(
+            new.contains("on_demand = true\nwhen = \"Only for x.\"")
+                && new.matches("on_demand").count() == 2,
+            "what is set stays: {new}"
+        );
+        let none = migrate("version = 6\n").expect("valid").expect("migrated");
+        assert!(!none.contains("mcp"), "no section added: {none}");
     }
 
     #[test]

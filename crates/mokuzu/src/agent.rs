@@ -1066,7 +1066,9 @@ impl Agent {
             .collect();
         self.messages.push(Message::User { content });
         let desktop = browser::available().await;
-        let extra: Vec<ToolDefinition> = self
+        // On-demand MCP servers this conversation opened earlier stay open.
+        let mut opened = self.mcp.opened(&self.messages);
+        let mut extra: Vec<ToolDefinition> = self
             .schedules()
             .then(cron::tool)
             .into_iter()
@@ -1075,7 +1077,7 @@ impl Agent {
             .chain(self.search.is_some().then(swarm::tool))
             .chain(desktop.then(browser::tool))
             .chain([files::send_tool()])
-            .chain(self.mcp.tools().iter().cloned())
+            .chain(self.mcp.tools(&opened).cloned())
             .collect();
         let mut ran_tools = false;
         loop {
@@ -1213,7 +1215,21 @@ impl Agent {
                         }
                         None => "error: cast_crabs needs web search configured".to_owned(),
                     },
-                    other => match self.mcp.call(other, &call.function.arguments, io).await {
+                    "use_server" => {
+                        let args = &call.function.arguments;
+                        let (output, tools) = self.mcp.open(args, &mut opened);
+                        if !tools.is_empty() {
+                            let server = args["server"].as_str().unwrap_or_default();
+                            io.note(&format!("🔌 opening {server}")).await?;
+                            extra.extend(tools.iter().cloned());
+                        }
+                        output
+                    }
+                    other => match self
+                        .mcp
+                        .call(other, &call.function.arguments, &opened, io)
+                        .await
+                    {
                         Some(output) => {
                             let (output, shots) = output?;
                             images.extend(shots.into_iter().map(UserContent::Image));

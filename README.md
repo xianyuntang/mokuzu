@@ -268,6 +268,7 @@ Logs:
 | `browser__*` | The [built-in browser](#browser): opens and works pages in a real Firefox, for signed-in sites and pages that block `fetch_url`. | With `[browser] approve = true` |
 | `desktop` | Sees and uses the [virtual desktop](#browser) the browser draws on: screenshots, mouse clicks and drags, scrolling, keys, typing. Every call returns a screenshot. For what the `browser__*` tools can't reach, such as a captcha or a canvas. Offered only when the virtual desktop is up (needs `ffmpeg`, and `xdotool` to act). | With `[browser] approve = true` (screenshots never ask) |
 | `settings` | Reads or changes the model and a few limits. | Yes |
+| `use_server` | Opens an MCP server set to `on_demand = true`, whose tools are held back until a task calls for them. Offered only when there is one. | No |
 | MCP tools | Any tool from the MCP servers you connect. | Yes, per server |
 
 ### MCP servers
@@ -291,6 +292,22 @@ approve = true   # ask before each call
 
 Servers connect once at startup and are shared by every conversation. Restart after changing
 them.
+
+A server meant for one kind of task can be kept out of the way the rest of the time: with
+`on_demand = true`, the model sees only the server's name and its `when` text, and gets its
+tools after opening it with `use_server`, for the rest of that conversation. Until then its
+tools cannot be called, so they are not picked by mistake, and they take up no context. Crabs
+cannot open one.
+
+```toml
+# A second browser, for the few things the built-in one cannot do.
+[mcp.servers.chrome]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp", "--browserUrl", "http://127.0.0.1:9222"]
+approve = true
+on_demand = true
+when = "Only for Chrome extensions, or when the user asks for Chrome. Web pages go through browser__*."
+```
 
 ### Browser
 

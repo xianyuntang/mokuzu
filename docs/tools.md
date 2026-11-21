@@ -98,7 +98,8 @@ message starts with `/cast <request>`.
 - Up to 10 crabs per call ("wave"), all running at once. The model sends more waves as needed.
 - Each crab has a name, a role, and one task. It sees only that task, not the conversation.
 - Crabs use `web_search`, `fetch_url`, `read_file`, `list_dir`, `view_pdf`, and tools of MCP
-  servers set to `approve = false`. They cannot start crabs of their own or see images.
+  servers set to `approve = false` that are not on demand. They cannot start crabs of their own
+  or see images.
 - Each crab gets 8 model calls and 10 minutes, then reports in under 200 words with sources.
   Reports are cut to 1,500 characters.
 - A live board in Discord shows what each crab is doing, redrawn every 1.5 seconds.
@@ -218,6 +219,19 @@ Offered only when that desktop is up, on Linux without a screen with `ffmpeg` in
 - `[browser] approve = true` puts each action to you, or to the reviewer in auto mode;
   screenshots never ask. Actions wait while you control the desktop in `/browser`.
 - Prefer `browser__*` for web pages; this is for what they can't reach, like a captcha or a canvas.
+
+### `use_server`
+
+Opens an MCP server set to `on_demand = true`. Offered only when such a server is connected.
+
+- An on-demand server's tools are held back: the model does not see them, and a call to one
+  is refused, until it opens the server. Until then it sees only the server's name and its
+  `when` text, which says what the server is for.
+- Once opened, the server's tools are offered for the rest of the conversation. `/new`, or the
+  summary that replaces old messages, closes it again.
+- Opening never asks; the server's own tools still ask when it sets `approve = true`.
+- Use it for a server meant for one kind of task, so its tools are not picked by mistake for
+  everything else and do not take up context: a second browser next to `browser__*`, say.
 
 ### `settings`
 

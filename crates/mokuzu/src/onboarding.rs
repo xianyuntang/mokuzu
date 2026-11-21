@@ -90,6 +90,8 @@ const ASK_ME: &str = "Ask me every time";
 const AUTO: &str = "Auto (LLM review)";
 const SAME_MODEL: &str = "Same as main model";
 const NEVER_ASK: &str = "Never ask";
+const ALWAYS_OPEN: &str = "Always offered";
+const ON_DEMAND: &str = "On demand";
 const API_AUTO: &str = "Auto (from model name)";
 
 /// Shows the setup and saves the config to `path`.
@@ -171,8 +173,10 @@ const BROWSER: usize = 40;
 const BROWSER_APPROVE: usize = 41;
 const EFFORT: usize = 42;
 const THREADS: usize = 43;
+const MCP_ON_DEMAND: usize = 44;
+const MCP_WHEN: usize = 45;
 /// First of the rows for already configured MCP servers.
-const MCP_FIRST: usize = 44;
+const MCP_FIRST: usize = 46;
 
 /// Focus value for the Save button under the fields.
 const BUTTON: usize = usize::MAX;
@@ -600,6 +604,13 @@ impl Form {
             }
             .to_owned(),
         ));
+        fields.push(field(
+            STEP_MCP,
+            "Server tools",
+            Kind::Select(options(&[ALWAYS_OPEN, ON_DEMAND])),
+            ALWAYS_OPEN.to_owned(),
+        ));
+        fields.push(field(STEP_MCP, "Server is for", Kind::Text, String::new()));
         let mcp_names: Vec<String> = current
             .map(|c| c.mcp.keys().cloned().collect())
             .unwrap_or_default();
@@ -646,7 +657,11 @@ impl Form {
                 SEARCH_URL | SEARCH_USER | SEARCH_PASSWORD => self.fields[SEARCH].value == SEARXNG,
                 SEARCH_RESULTS => self.fields[SEARCH].value != DISABLED,
                 BRAVE_KEY => self.fields[SEARCH].value == BRAVE,
-                MCP_NAME | MCP_APPROVE => self.fields[MCP_ADD].value != NO,
+                MCP_NAME | MCP_APPROVE | MCP_ON_DEMAND => self.fields[MCP_ADD].value != NO,
+                MCP_WHEN => {
+                    self.fields[MCP_ADD].value != NO
+                        && self.fields[MCP_ON_DEMAND].value == ON_DEMAND
+                }
                 MCP_COMMAND | MCP_ARGS | MCP_ENV => self.fields[MCP_ADD].value == STDIO,
                 MCP_URL | MCP_TOKEN => self.fields[MCP_ADD].value == HTTP,
                 REVIEWER => self.fields[APPROVAL].value == AUTO,
@@ -1177,6 +1192,13 @@ impl Form {
             }
         }
         table["approve"] = toml_edit::value(self.fields[MCP_APPROVE].value != NEVER_ASK);
+        let on_demand = self.fields[MCP_ON_DEMAND].value == ON_DEMAND;
+        table["on_demand"] = toml_edit::value(on_demand);
+        table["when"] = toml_edit::value(if on_demand {
+            self.required(MCP_WHEN)?
+        } else {
+            String::new()
+        });
         Ok((remove, Some((name, table))))
     }
 
@@ -1470,6 +1492,7 @@ impl Form {
                     | MCP_NAME
                     | MCP_COMMAND
                     | MCP_URL
+                    | MCP_WHEN
                     | DATABASE
                     | VOICE_KEY
                     | VOICE_MODEL
@@ -1570,6 +1593,14 @@ fn help(i: usize) -> (&'static str, &'static str) {
         MCP_URL => "The server's URL, starting with http:// or https://.",
         MCP_TOKEN => "Bearer token for the server, if it needs one.",
         MCP_APPROVE => "Ask before each of this server's tool calls, or let them run.",
+        MCP_ON_DEMAND => {
+            "Always offered puts this server's tools in every conversation. On demand holds \
+             them back until the model opens the server for a task it is meant for."
+        }
+        MCP_WHEN => {
+            "What this server is for, in a sentence. The model reads it to decide when to \
+             open the server."
+        }
         APPROVAL => {
             "Who approves actions like settings changes and MCP calls: you every time, or \
              a reviewer model that passes low-risk ones and asks you about the rest."
@@ -1944,6 +1975,15 @@ mod tests {
         assert_eq!(gh.env["MODE"].as_str(), "ro");
         form.fields[MCP_ENV].value = "oops".to_owned();
         assert!(form.mcp().is_err());
+        form.fields[MCP_ENV].value = String::new();
+        form.fields[MCP_ON_DEMAND].value = ON_DEMAND.to_owned();
+        assert!(form.mcp().is_err(), "on demand needs what it is for");
+        form.fields[MCP_WHEN].value = "Only for LINE.".to_owned();
+        let (_, add) = form.mcp().expect("valid");
+        let merged = merge_mcp("[opencode-go]\napi_key = \"k\"\n", None, &[], add);
+        let gh = &Config::parse(&merged).expect("valid").mcp["gh"];
+        assert!(gh.on_demand && gh.when == "Only for LINE.");
+        form.fields[MCP_ON_DEMAND].value = ALWAYS_OPEN.to_owned();
 
         form.fields[MCP_ENV].value = String::new();
         form.fields[MCP_NAME].value = config::BROWSER_SERVER.to_owned();

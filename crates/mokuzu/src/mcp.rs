@@ -1,20 +1,24 @@
 //! MCP client: connects to the configured servers at startup and offers their tools to the model
 //! as `<server>__<tool>`. Each call asks the user first unless the server sets `approve = false`.
+//! A server with `on_demand = true` keeps its tools back until the model opens it with
+//! `use_server`, so they are out of reach for everything the server is not meant for.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use rig_core::completion::ToolDefinition;
-use rig_core::message::{DocumentSourceKind, Image, ImageMediaType, MimeType as _};
+use rig_core::message::{
+    AssistantContent, DocumentSourceKind, Image, ImageMediaType, Message, MimeType as _,
+};
 use rmcp::ServiceExt as _;
 use rmcp::model::{CallToolRequestParams, ContentBlock, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt as _;
 
 use crate::agent::Io;
@@ -26,6 +30,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
 const CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 /// Longest tool name providers accept.
 const MAX_NAME_CHARS: usize = 64;
+/// The tool that opens an on-demand server.
+const USE_SERVER: &str = "use_server";
 // ponytail: hard cap on tool output fed back to the model; page it if servers return more.
 const MAX_OUTPUT_CHARS: usize = 30_000;
 
@@ -33,10 +39,16 @@ const MAX_OUTPUT_CHARS: usize = 30_000;
 #[derive(Default)]
 pub struct Mcp {
     servers: Vec<Server>,
-    /// Every server's tools, as sent to the model.
+    /// Tools of the servers that are always open, as sent to the model.
     definitions: Vec<ToolDefinition>,
-    /// Tools of servers with `approve = false`, which swarm crabs may call too.
+    /// Tools of servers with `approve = false`, which swarm crabs may call too; on-demand
+    /// servers are left out, since crabs cannot open one.
     unapproved: Vec<ToolDefinition>,
+    /// Tools of the on-demand servers by server name, held back until a conversation opens the
+    /// server.
+    on_demand: BTreeMap<String, Vec<ToolDefinition>>,
+    /// `use_server`, when there is an on-demand server to open.
+    opener: Option<ToolDefinition>,
     /// The built-in browser's config and `DISPLAY` when crabs may use it, to start each crab
     /// its own copy (see `OwnBrowser`).
     own_browser: Option<(McpServer, Option<String>)>,
@@ -90,47 +102,129 @@ impl Mcp {
                 server.name,
                 server.tools.len()
             );
-            if !server.approve {
-                mcp.unapproved.extend(definitions.iter().cloned());
+            if servers.get(&server.name).is_some_and(|c| c.on_demand) {
+                mcp.on_demand.insert(server.name.clone(), definitions);
+            } else {
+                if !server.approve {
+                    mcp.unapproved.extend(definitions.iter().cloned());
+                }
+                mcp.definitions.extend(definitions);
             }
-            mcp.definitions.extend(definitions);
             mcp.servers.push(server);
         }
+        let notes: Vec<(&str, &str)> = mcp
+            .on_demand
+            .keys()
+            .filter_map(|name| Some((name.as_str(), servers.get(name)?.when.as_str())))
+            .collect();
+        mcp.opener = (!notes.is_empty()).then(|| opener(&notes));
         mcp
     }
 
-    pub fn tools(&self) -> &[ToolDefinition] {
-        &self.definitions
+    /// The tools offered to a conversation that has opened the on-demand servers in `opened`.
+    pub fn tools<'a>(
+        &'a self,
+        opened: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = &'a ToolDefinition> {
+        self.definitions.iter().chain(&self.opener).chain(
+            opened
+                .iter()
+                .filter_map(|name| self.on_demand.get(name))
+                .flatten(),
+        )
+    }
+
+    /// The on-demand servers the conversation in `messages` opened with `use_server`. Read from
+    /// the history, so a server stays open across restarts and closes again once compaction or
+    /// `/new` drops the call.
+    pub fn opened(&self, messages: &[Message]) -> BTreeSet<String> {
+        if self.on_demand.is_empty() {
+            return BTreeSet::new();
+        }
+        messages
+            .iter()
+            .filter_map(|message| match message {
+                Message::Assistant { content, .. } => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|content| match content {
+                AssistantContent::ToolCall(call) if call.function.name == USE_SERVER => {
+                    call.function.arguments["server"].as_str()
+                }
+                _ => None,
+            })
+            .filter(|name| self.on_demand.contains_key(*name))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Runs one `use_server` call, adding the server it names to `opened`: text for the model,
+    /// and the tools the conversation gains, none when the server was open or is not one.
+    pub fn open(&self, args: &Value, opened: &mut BTreeSet<String>) -> (String, &[ToolDefinition]) {
+        let name = args["server"].as_str().unwrap_or_default();
+        let Some((name, tools)) = self.on_demand.get_key_value(name) else {
+            let names: Vec<&str> = self.on_demand.keys().map(String::as_str).collect();
+            return (
+                format!(
+                    "error: no on-demand server `{name}`; there is: {}",
+                    names.join(", ")
+                ),
+                &[],
+            );
+        };
+        if !opened.insert(name.clone()) {
+            return (
+                format!("{name} is already open; use its {name}__* tools"),
+                &[],
+            );
+        }
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        (
+            format!(
+                "Opened {name}. Its tools are offered from your next step: {}",
+                names.join(", ")
+            ),
+            tools,
+        )
     }
 
     /// Runs the MCP tool the model called `name`, or returns `None` if no server offers it.
     /// Failures of the tool itself come back as text for the model, and images it returns
-    /// alongside.
+    /// alongside. A tool of an on-demand server not in `opened` is refused.
     pub async fn call(
         &self,
         name: &str,
         args: &Value,
+        opened: &BTreeSet<String>,
         io: &mut impl Io,
     ) -> Option<Result<(String, Vec<Image>)>> {
         let (server, tool) = self.servers.iter().find_map(|server| {
             let (_, tool) = server.tools.iter().find(|(exposed, _)| exposed == name)?;
             Some((server, tool))
         })?;
+        if self.on_demand.contains_key(&server.name) && !opened.contains(&server.name) {
+            return Some(Ok((
+                format!("error: open `{}` with {USE_SERVER} first", server.name),
+                Vec::new(),
+            )));
+        }
         Some(server.call(tool, args, io).await)
     }
 
-    /// Tools that run without asking: those of servers with `approve = false`.
+    /// Tools that run without asking: those of always-open servers with `approve = false`.
     pub fn unapproved_tools(&self) -> &[ToolDefinition] {
         &self.unapproved
     }
 
-    /// Runs `name` if it comes from a server with `approve = false`, with no one to ask or tell,
-    /// as swarm crabs do; images it returns are left out. Returns `None` for any other name.
+    /// Runs `name` if it comes from an always-open server with `approve = false`, with no one to
+    /// ask or tell, as swarm crabs do; images it returns are left out. Returns `None` for any
+    /// other name.
     pub async fn call_unapproved(&self, name: &str, args: &Value) -> Option<String> {
         let (server, tool) = self
             .servers
             .iter()
-            .filter(|s| !s.approve)
+            .filter(|s| !s.approve && !self.on_demand.contains_key(&s.name))
             .find_map(|server| {
                 let (_, tool) = server.tools.iter().find(|(exposed, _)| exposed == name)?;
                 Some((server, tool))
@@ -439,6 +533,28 @@ fn exposed_name(server: &str, tool: &str) -> String {
     format!("{server}__{tool}")
 }
 
+/// `use_server`: opens one of the on-demand `servers`, each given as its name and what it is for.
+fn opener(servers: &[(&str, &str)]) -> ToolDefinition {
+    let mut description = "Open an MCP server whose tools are held back until a task needs them. \
+         Once opened, its tools (named <server>__<tool>) are offered from your next step, for the \
+         rest of this conversation. Open a server only when its note fits what the user asked; \
+         for everything else, use the tools you already have."
+        .to_owned();
+    for (name, when) in servers {
+        description.push_str(&format!("\n- {name}: {when}"));
+    }
+    let names: Vec<&str> = servers.iter().map(|(name, _)| *name).collect();
+    ToolDefinition {
+        name: USE_SERVER.to_owned(),
+        description,
+        parameters: json!({
+            "type": "object",
+            "properties": {"server": {"type": "string", "enum": names}},
+            "required": ["server"],
+        }),
+    }
+}
+
 fn definition(exposed: &str, tool: &Tool) -> ToolDefinition {
     ToolDefinition {
         name: exposed.to_owned(),
@@ -517,16 +633,22 @@ mod tests {
     async fn everything_server_round_trip() {
         let config = crate::config::Config::parse(
             "[opencode-go]\napi_key = \"k\"\n[mcp.servers.every]\ncommand = \"npx\"\n\
-             args = [\"-y\", \"@modelcontextprotocol/server-everything\"]\n",
+             args = [\"-y\", \"@modelcontextprotocol/server-everything\"]\n\
+             [mcp.servers.held]\ncommand = \"npx\"\n\
+             args = [\"-y\", \"@modelcontextprotocol/server-everything\"]\n\
+             approve = false\non_demand = true\nwhen = \"Only for tests.\"\n",
         )
         .expect("valid");
         let mcp = Mcp::connect(&config.mcp, None).await;
-        assert!(mcp.tools().iter().any(|t| t.name == "every__echo"));
+        let mut opened = BTreeSet::new();
+        assert!(mcp.tools(&opened).any(|t| t.name == "every__echo"));
+        assert!(!mcp.tools(&opened).any(|t| t.name == "held__echo"));
         let mut io = Approver::default();
         let out = mcp
             .call(
                 "every__echo",
                 &serde_json::json!({"message": "hi"}),
+                &opened,
                 &mut io,
             )
             .await
@@ -536,10 +658,71 @@ mod tests {
         assert!(out.contains("hi") && !out.starts_with("error"), "{out}");
         assert_eq!(io.0.len(), 1, "asked for approval once");
         assert!(
-            mcp.call("every__nope", &Value::Null, &mut io)
+            mcp.call("every__nope", &Value::Null, &opened, &mut io)
                 .await
                 .is_none()
         );
+        let echo = serde_json::json!({"message": "held"});
+        let call = |opened: &BTreeSet<String>| {
+            let (mcp, echo, opened) = (&mcp, &echo, opened.clone());
+            async move {
+                let mut io = Approver::default();
+                let out = mcp.call("held__echo", echo, &opened, &mut io).await;
+                out.expect("tool exists").expect("call runs").0
+            }
+        };
+        let refused = call(&opened).await;
+        assert!(refused.starts_with("error: open `held`"), "{refused}");
+        let (_, gained) = mcp.open(&serde_json::json!({"server": "held"}), &mut opened);
+        assert!(gained.iter().any(|t| t.name == "held__echo"));
+        let out = call(&opened).await;
+        assert!(out.contains("held") && !out.starts_with("error"), "{out}");
+        assert!(
+            mcp.call_unapproved("held__echo", &echo).await.is_none(),
+            "crabs cannot reach an on-demand server"
+        );
+    }
+
+    #[test]
+    fn on_demand_tools_stay_back_until_the_server_is_opened() {
+        let tool = |name: &str| ToolDefinition {
+            name: name.to_owned(),
+            description: String::new(),
+            parameters: json!({}),
+        };
+        let mcp = Mcp {
+            definitions: vec![tool("fs__read")],
+            on_demand: BTreeMap::from([("chrome".to_owned(), vec![tool("chrome__click")])]),
+            opener: Some(opener(&[("chrome", "Only for LINE.")])),
+            ..Mcp::default()
+        };
+        let names = |opened: &BTreeSet<String>| -> Vec<String> {
+            mcp.tools(opened).map(|t| t.name.clone()).collect()
+        };
+        let mut opened = mcp.opened(&[Message::user("hi")]);
+        assert_eq!(names(&opened), ["fs__read", USE_SERVER]);
+        assert!(
+            mcp.tools(&opened)
+                .any(|t| t.description.contains("- chrome: Only for LINE.")),
+            "the model is told what the server is for"
+        );
+        let (said, gained) = mcp.open(&json!({"server": "nope"}), &mut opened);
+        assert!(said.starts_with("error") && gained.is_empty() && opened.is_empty());
+        let (_, gained) = mcp.open(&json!({"server": "chrome"}), &mut opened);
+        assert_eq!(gained.len(), 1);
+        assert_eq!(names(&opened), ["fs__read", USE_SERVER, "chrome__click"]);
+        let again = mcp.open(&json!({"server": "chrome"}), &mut opened);
+        assert!(again.1.is_empty(), "its tools are added once");
+        // A later turn finds the server open from the call in the history.
+        let history = [Message::Assistant {
+            id: None,
+            content: vec![AssistantContent::tool_call(
+                "1",
+                USE_SERVER,
+                json!({"server": "chrome"}),
+            )],
+        }];
+        assert_eq!(mcp.opened(&history), opened);
     }
 
     #[test]
