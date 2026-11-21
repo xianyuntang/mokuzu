@@ -1,5 +1,6 @@
 //! Agent loop over Rig's provider clients, with read-only local tools.
 
+use std::hash::{BuildHasher, RandomState};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -99,8 +100,34 @@ pub trait Io {
     }
 }
 
+/// Hears what a model request is waiting on, like a resend after an overload.
+pub(crate) trait Status {
+    async fn status(&mut self, text: &str);
+}
+
+impl<I: Io> Status for I {
+    async fn status(&mut self, text: &str) {
+        if let Err(err) = self.note(text).await {
+            tracing::warn!("failed to show model status: {err:#}");
+        }
+    }
+}
+
+/// A `Status` that hands each line to a plain function, e.g. a swarm crab's board step.
+pub(crate) struct StatusFn<F>(pub F);
+
+impl<F: Fn(String)> Status for StatusFn<F> {
+    async fn status(&mut self, text: &str) {
+        (self.0)(text.to_owned());
+    }
+}
+
 /// Times a Gemini request is sent before a malformed response counts as an error.
 const GEMINI_TRIES: u32 = 3;
+/// Times a model request is sent while the provider reports it is busy or rate-limited.
+const BUSY_TRIES: u32 = 5;
+/// Wait before the first resend; each later one doubles it, so 5s, 10s, 20s, 40s.
+const BUSY_BACKOFF: Duration = Duration::from_secs(5);
 
 type AnthropicModel = <anthropic::Client as CompletionClient>::CompletionModel;
 type OpenaiModel = <openai::CompletionsClient as CompletionClient>::CompletionModel;
@@ -240,12 +267,68 @@ impl Model {
             }
         }
     }
+
+    /// `complete`, resent with exponential backoff while the provider is overloaded or
+    /// rate-limited. `status` hears each wait, for the user. A provider's `Retry-After` is
+    /// ignored: overloaded ones ask for minutes, longer than a turn should hang.
+    pub(crate) async fn complete_retrying(
+        &self,
+        request: CompletionRequest,
+        status: &mut impl Status,
+    ) -> Result<CompletionResponse> {
+        let mut delay = BUSY_BACKOFF;
+        for attempt in 1.. {
+            match self.complete(request.clone()).await {
+                Err(err) if attempt < BUSY_TRIES && busy(&err) => {
+                    // 75–100% of the delay, so crabs hitting the same overload don't resend in step.
+                    let jitter = RandomState::new().hash_one(attempt) % 250;
+                    let wait = delay.mul_f64(0.75 + jitter as f64 / 1000.0);
+                    tracing::warn!(attempt, ?wait, "provider busy, resending: {err}");
+                    status
+                        .status(&format!(
+                            "⏳ provider busy; retrying in {}s ({attempt}/{})",
+                            wait.as_secs(),
+                            BUSY_TRIES - 1
+                        ))
+                        .await;
+                    tokio::time::sleep(wait).await;
+                    delay *= 2;
+                }
+                Err(err) if attempt > 1 => {
+                    return Err(
+                        anyhow::Error::new(err).context(format!("failed after {attempt} tries"))
+                    );
+                }
+                result => return Ok(result?),
+            }
+        }
+        unreachable!("the attempt loop only ends by returning")
+    }
 }
 
 /// Whether `err` is rig failing to parse an Anthropic-format reply whose `content` is `null`.
 fn null_content(err: &CompletionError) -> bool {
     matches!(err, CompletionError::JsonError(err)
         if err.to_string().starts_with("invalid type: null, expected a sequence"))
+}
+
+/// Whether `err` says the provider is overloaded or rate-limited for now, so a resend may work.
+fn busy(err: &CompletionError) -> bool {
+    let status = err.provider_response_status().map(|status| status.as_u16());
+    let body = err.provider_response_body().unwrap_or_default();
+    // A spent quota answers 429 too, but waiting a minute won't refill it.
+    if body.contains("quota") || body.contains("usage_limit") {
+        return false;
+    }
+    matches!(status, Some(429 | 500 | 502 | 503 | 504 | 529))
+        || [
+            "overloaded",
+            "rate_limit",
+            "service_unavailable",
+            "server_error",
+        ]
+        .iter()
+        .any(|marker| body.contains(marker))
 }
 
 /// OpenCode Go serves Gemini under `/inference/go/google` instead of next to the other formats, so
@@ -290,7 +373,7 @@ impl Reviewer for Review {
         request.tools.clear();
         let response = self
             .model
-            .complete(request)
+            .complete_retrying(request, &mut StatusFn(|_| {}))
             .await
             .context("review request failed")?;
         Ok(response
@@ -1083,7 +1166,10 @@ impl Agent {
         loop {
             let response = self
                 .model
-                .complete(request(&self.config, &self.system, &self.messages, &extra))
+                .complete_retrying(
+                    request(&self.config, &self.system, &self.messages, &extra),
+                    io,
+                )
                 .await
                 .context("model request failed")?;
             match response.finish_reason() {
@@ -1587,6 +1673,32 @@ mod tests {
         assert!(null_content(&CompletionError::JsonError(err)));
         let other = serde_json::from_str::<Value>("{").expect_err("invalid JSON");
         assert!(!null_content(&CompletionError::JsonError(other)));
+    }
+
+    #[test]
+    fn busy_spots_overload_but_not_spent_quota() {
+        use reqwest::StatusCode;
+        use rig_core::ProviderResponseError;
+        use rig_core::http_client::Error as HttpError;
+        let in_stream = |body: &str| {
+            CompletionError::ProviderResponse(ProviderResponseError::without_status(body))
+        };
+        let http = |status, body: &str| {
+            CompletionError::HttpError(HttpError::InvalidStatusCodeWithMessage(status, body.into()))
+        };
+        assert!(busy(&in_stream(
+            r#"{"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded"}}"#
+        )));
+        assert!(busy(&http(StatusCode::from_u16(529).unwrap(), "{}")));
+        assert!(busy(&http(StatusCode::TOO_MANY_REQUESTS, "slow down")));
+        assert!(!busy(&http(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"code":"insufficient_quota"}"#
+        )));
+        assert!(!busy(&http(StatusCode::BAD_REQUEST, "bad tool schema")));
+        assert!(!busy(&in_stream(
+            r#"{"error":{"message":"invalid model"}}"#
+        )));
     }
 
     #[test]

@@ -365,7 +365,10 @@ async fn work(
     for round in 1..=AGENT_STEPS {
         step("💭 thinking".to_owned());
         let response = match model
-            .complete(agent_request(tools, &system, &messages))
+            .complete_retrying(
+                agent_request(tools, &system, &messages),
+                &mut agent::StatusFn(&step),
+            )
             .await
         {
             Ok(response) => response,
