@@ -137,9 +137,11 @@ async fn view_pages(
     fetcher: &Fetcher,
     args: &Value,
 ) -> Result<(String, Vec<Image>)> {
-    let bytes = match (args["path"].as_str(), args["url"].as_str()) {
+    // Models fill the unused one with "", which means not given.
+    let given = |key: &str| args[key].as_str().map(str::trim).filter(|v| !v.is_empty());
+    let bytes = match (given("path"), given("url")) {
         (Some(_), None) => files::read_bytes(config, &args["path"]).await?.1,
-        (None, Some(url)) => fetcher.download(url.trim()).await?.2,
+        (None, Some(url)) => fetcher.download(url).await?.2,
         _ => bail!("give exactly one of `path` or `url`"),
     };
     if !bytes.starts_with(b"%PDF-") {

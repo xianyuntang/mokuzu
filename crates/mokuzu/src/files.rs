@@ -171,7 +171,9 @@ pub fn send_tool() -> ToolDefinition {
 
 /// The file a `send_file` call names: a file name for the attachment, and its bytes.
 pub async fn load(config: &Config, fetcher: &Fetcher, args: &Value) -> Result<(String, Vec<u8>)> {
-    let (name, bytes) = match (args["path"].as_str(), args["url"].as_str()) {
+    // Models fill the unused one with "", which means not given.
+    let given = |key: &str| args[key].as_str().map(str::trim).filter(|v| !v.is_empty());
+    let (name, bytes) = match (given("path"), given("url")) {
         (Some(_), None) => {
             let (path, bytes) = read_bytes(config, &args["path"]).await?;
             let name = path
@@ -180,7 +182,7 @@ pub async fn load(config: &Config, fetcher: &Fetcher, args: &Value) -> Result<(S
             (name, bytes)
         }
         (None, Some(url)) => {
-            let (url, _, bytes) = fetcher.download(url.trim()).await?;
+            let (url, _, bytes) = fetcher.download(url).await?;
             if bytes.len() >= fetch::MAX_BYTES {
                 bail!("the file is over {} bytes", fetch::MAX_BYTES);
             }
@@ -362,6 +364,19 @@ mod tests {
         );
         assert_eq!(url_name("https://example.com/"), None);
         assert_eq!(url_name("https://example.com"), None);
+    }
+
+    #[tokio::test]
+    async fn send_file_takes_an_empty_url_as_not_given() {
+        let dir = std::env::temp_dir().join(format!("mokuzu-send-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("chart.png"), "png").expect("write");
+        let config = Config::parse("[opencode-go]\napi_key = \"k\"\n").expect("valid");
+        let fetcher = crate::fetch::Fetcher::new().expect("client");
+        let args = json!({ "path": dir.join("chart.png"), "url": "" });
+        let (name, bytes) = load(&config, &fetcher, &args).await.expect("loads");
+        assert_eq!((name.as_str(), bytes.as_slice()), ("chart.png", b"png".as_slice()));
+        std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
     #[tokio::test]
