@@ -61,6 +61,19 @@ pub fn tool() -> ToolDefinition {
     }
 }
 
+/// The cron tool inside a job's own run: it can only remove that job, so a watching job stops
+/// once what it watched for happens.
+pub fn remove_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "cron".to_owned(),
+        description: "Remove the scheduled job you are running as, so it never runs again. Call \
+                      it when the task says to stop or remove the job, e.g. once what it watches \
+                      for has happened."
+            .to_owned(),
+        parameters: json!({"type": "object", "properties": {}}),
+    }
+}
+
 /// A job the cron tool asked for, already validated.
 #[derive(Debug, PartialEq, Eq)]
 pub struct NewJob {

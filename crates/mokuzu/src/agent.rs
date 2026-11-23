@@ -741,6 +741,21 @@ impl Agent {
         self.key.starts_with("discord:")
     }
 
+    /// The job this conversation is a run of; such a run may only remove its own job.
+    fn job(&self) -> Option<i64> {
+        self.key.strip_prefix("cron:")?.parse().ok()
+    }
+
+    /// Removes job `id` from within its own run.
+    async fn end_job(&self, id: i64, io: &mut impl Io) -> Result<String> {
+        if !self.db.remove_job(id).await? {
+            return Ok(format!("error: job #{id} is already gone"));
+        }
+        let note = format!("⏰ removed #{id}");
+        io.note(&note).await?;
+        Ok(note)
+    }
+
     /// The webhook server's port, when this conversation can make webhooks.
     fn webhooks(&self) -> Option<u16> {
         self.config.webhook_port.filter(|_| self.schedules())
@@ -1154,6 +1169,7 @@ impl Agent {
         let mut extra: Vec<ToolDefinition> = self
             .schedules()
             .then(cron::tool)
+            .or_else(|| self.job().map(|_| cron::remove_tool()))
             .into_iter()
             .chain(self.webhooks().map(|_| webhook::tool()))
             .chain(sandbox::available().then(sandbox::tool))
@@ -1270,6 +1286,7 @@ impl Agent {
                     "skill" => self.skill(&call.function.arguments, io).await?,
                     "manual" => manual::search(&call.function.arguments),
                     "cron" if self.schedules() => self.cron(&call.function.arguments, io).await?,
+                    "cron" if let Some(id) = self.job() => self.end_job(id, io).await?,
                     "webhook" => match self.webhooks() {
                         Some(port) => self.webhook(port, &call.function.arguments, io).await?,
                         None => "error: webhooks are off; set [webhook] port".to_owned(),

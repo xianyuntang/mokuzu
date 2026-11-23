@@ -169,7 +169,8 @@ Scheduled jobs: a named prompt that runs on its own later. Discord only; jobs ru
 - A job's instructions are shown in full when it is made or changed.
 - Watching for something: a repeating job whose prompt checks the thing (a merge, a price, a
   notice). A run that replies exactly `NO_REPLY` posts nothing, so the job stays quiet until the
-  thing happens, then tells you and removes itself.
+  thing happens, then tells you and removes itself. Inside a run, `cron` can only remove that
+  job; it can't add or change jobs.
 
 ### `webhook`
 
