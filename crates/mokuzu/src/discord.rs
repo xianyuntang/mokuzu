@@ -52,6 +52,9 @@ const DENY: &str = "mokuzu:deny";
 const MAX_STATUS_CHARS: usize = 200;
 /// How often the scheduler looks for due jobs.
 const CRON_TICK: Duration = Duration::from_secs(30);
+/// How often idle threads are looked for, and how long one sits idle before it is archived.
+const TIDY_EVERY: Duration = Duration::from_secs(600);
+const THREAD_IDLE: Duration = Duration::from_secs(3600);
 /// Discord caps thread names at 100 characters.
 const MAX_THREAD_NAME_CHARS: usize = 80;
 /// Anthropic rejects images over 5 MB; larger attachments are left out.
@@ -162,15 +165,55 @@ async fn run_scheduler(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>) {
     let mut tick = tokio::time::interval(CRON_TICK);
     // Conversations already kept open for their jobs since startup.
     let mut kept = HashSet::new();
+    let mut last_tidy: Option<tokio::time::Instant> = None;
     loop {
         tick.tick().await;
         if let Err(err) = keep_job_threads(&db, &http, &mut kept).await {
             tracing::warn!("failed to keep job threads open: {err:#}");
         }
+        if last_tidy.is_none_or(|at| at.elapsed() >= TIDY_EVERY) {
+            last_tidy = Some(tokio::time::Instant::now());
+            if let Err(err) = archive_idle_threads(&db, &http).await {
+                tracing::warn!("failed to archive idle threads: {err:#}");
+            }
+        }
         if let Err(err) = start_due_jobs(&config, &db, &mcp, &http).await {
             tracing::warn!("scheduler tick failed: {err:#}");
         }
     }
+}
+
+/// Archives the threads mokuzu opened once idle past `THREAD_IDLE`, except those its jobs post
+/// to. Discord's `auto_archive_duration` now only hides a thread in some clients and archives
+/// after days or never, so threads pile up toward the server's 1000 active-thread cap.
+/// Archiving also sets the hour back, for threads whose job was removed.
+async fn archive_idle_threads(db: &Db, http: &Http) -> Result<()> {
+    let jobs: HashSet<String> = db.jobs().await?.into_iter().map(|job| job.target).collect();
+    let me = http.get_current_user().await?.id;
+    let now = serenity::all::Timestamp::now().unix_timestamp();
+    for guild in http.get_guilds(None, None).await? {
+        for thread in guild.id.get_active_threads(http).await?.threads {
+            let last = thread
+                .last_message_id
+                .map_or(thread.id.created_at(), |id| id.created_at());
+            if thread.owner_id != Some(me)
+                || jobs.contains(&format!("discord:{}", thread.id))
+                || now - last.unix_timestamp() < THREAD_IDLE.as_secs() as i64
+            {
+                continue;
+            }
+            thread
+                .id
+                .edit_thread(
+                    http,
+                    EditThread::new()
+                        .archived(true)
+                        .auto_archive_duration(AutoArchiveDuration::OneHour),
+                )
+                .await?;
+        }
+    }
+    Ok(())
 }
 
 /// Makes each thread a job posts to archive after a week idle instead of an hour, so it stays
