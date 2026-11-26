@@ -166,11 +166,12 @@ Scheduled jobs: a named prompt that runs on its own later. Discord only; jobs ru
   timing, or both. `run` gives a job a trial run now, posted where the job was made, without
   changing its schedule. `remove` deletes a job. Jobs are found by `id`, or by a name that
   matches exactly one.
-- A job's instructions are shown in full when it is made or changed.
+- A job's instructions are shown in full when it is made or changed. A run shows a `⏰ job`
+  status line, plus its notes, as soon as it starts.
 - Watching for something: a repeating job whose prompt checks the thing (a merge, a price, a
-  notice). A run that replies exactly `NO_REPLY` posts nothing, so the job stays quiet until the
-  thing happens, then tells you and removes itself. Inside a run, `cron` can only remove that
-  job; it can't add or change jobs.
+  notice). A run that replies exactly `NO_REPLY` deletes its status and leaves nothing, so the
+  job stays quiet until the thing happens, then tells you and removes itself. Inside a run,
+  `cron` can only remove that job; it can't add or change jobs.
 
 ### `webhook`
 

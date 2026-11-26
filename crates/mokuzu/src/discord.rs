@@ -271,6 +271,7 @@ fn unattended_io(http: Arc<Http>, target: &str) -> Option<DiscordIo> {
         inbox,
         approval: None,
         status: None,
+        statuses: Vec::new(),
         board: None,
         reply: None,
     })
@@ -323,7 +324,7 @@ async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Jo
     let Some(mut io) = unattended_io(http, &job.target) else {
         return;
     };
-    // A run that replies `cron::SILENT` posts nothing, its `⏰ job` note included.
+    // A run that replies `cron::SILENT` takes back its `⏰ job` status and leaves nothing.
     let mut quiet = Quiet::new(&mut io);
     let run = async {
         quiet
@@ -340,7 +341,10 @@ async fn run_job(config: Config, db: Db, mcp: Arc<Mcp>, http: Arc<Http>, job: Jo
     };
     match run.await {
         Ok(true) => {}
-        Ok(false) => tracing::debug!(job = job.id, "job had nothing to say"),
+        Ok(false) => {
+            tracing::debug!(job = job.id, "job had nothing to say");
+            io.delete_statuses().await;
+        }
         Err(err) => {
             tracing::warn!("job failed: {err:#}");
             if let Err(err) = io
@@ -1018,6 +1022,7 @@ async fn run_channel(
         inbox,
         approval: None,
         status: None,
+        statuses: Vec::new(),
         board: None,
         reply: None,
     };
@@ -1054,6 +1059,7 @@ async fn run_channel(
             continue;
         }
         io.status = None;
+        io.statuses.clear();
         let typing = io.channel.start_typing(&io.http);
         let result = match download(&io.web, &attachments, voice.as_ref()).await {
             Ok((text, images)) => {
@@ -1139,6 +1145,8 @@ struct DiscordIo {
     approval: Option<(MessageId, String)>,
     /// The status message notes are being collected into, and its text so far.
     status: Option<(MessageId, String)>,
+    /// Status and board messages sent this turn, so a silent job run can take them back.
+    statuses: Vec<MessageId>,
     /// The live board message, edited in place until the board is let go.
     board: Option<MessageId>,
     /// A voice call's request this turn answers, and everything the turn has said so far.
@@ -1184,6 +1192,15 @@ impl DiscordIo {
             tracing::warn!("failed to update approval message: {err:#}");
         }
     }
+
+    /// Deletes the status and board messages sent this turn; failures are only logged.
+    async fn delete_statuses(&mut self) {
+        for message in self.statuses.drain(..) {
+            if let Err(err) = self.channel.delete_message(&self.http, message).await {
+                tracing::warn!("failed to delete status message: {err:#}");
+            }
+        }
+    }
 }
 
 impl Io for DiscordIo {
@@ -1219,6 +1236,7 @@ impl Io for DiscordIo {
             return Ok(());
         }
         let message = self.send(CreateMessage::new().content(&line)).await?;
+        self.statuses.push(message);
         self.status = Some((message, line));
         Ok(())
     }
@@ -1238,7 +1256,9 @@ impl Io for DiscordIo {
         }
         // Notes after the board start a new status message below it.
         self.status = None;
-        self.board = Some(self.send(CreateMessage::new().content(body)).await?);
+        let message = self.send(CreateMessage::new().content(body)).await?;
+        self.statuses.push(message);
+        self.board = Some(message);
         Ok(())
     }
 

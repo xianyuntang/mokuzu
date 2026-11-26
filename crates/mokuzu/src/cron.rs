@@ -265,12 +265,12 @@ pub fn is_silent(reply: &str) -> bool {
 /// What a run said, held back until it is known whether to post it.
 enum Held {
     Say(String),
-    Note(String),
     Ran(String, bool),
 }
 
-/// Wraps `inner`, holding back replies and notes until `finish`, which drops them all when the
-/// last reply is `SILENT` or there is none. Approvals and files go straight through.
+/// Wraps `inner`, holding back replies until `finish`, which drops them all when the last reply
+/// is `SILENT` or there is none. Notes, approvals, and files go straight through, so a run shows
+/// its status while it works.
 pub struct Quiet<'a, I> {
     inner: &'a mut I,
     held: Vec<Held>,
@@ -298,7 +298,6 @@ impl<'a, I: Io> Quiet<'a, I> {
             match held {
                 Held::Say(text) if !is_silent(&text) => self.inner.say(&text).await?,
                 Held::Say(_) => {}
-                Held::Note(text) => self.inner.note(&text).await?,
                 Held::Ran(output, ok) => self.inner.ran(&output, ok).await?,
             }
         }
@@ -317,8 +316,7 @@ impl<I: Io> Io for Quiet<'_, I> {
     }
 
     async fn note(&mut self, text: &str) -> Result<()> {
-        self.held.push(Held::Note(text.to_owned()));
-        Ok(())
+        self.inner.note(text).await
     }
 
     async fn ran(&mut self, output: &str, ok: bool) -> Result<()> {
@@ -353,19 +351,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quiet_drops_silent_runs_and_replays_the_rest() {
+    async fn quiet_drops_silent_replies_and_replays_the_rest() {
         let mut seen = Seen::default();
         let mut quiet = Quiet::new(&mut seen);
         quiet.note("⏰ job #3 Watch CI").await.expect("note");
         quiet.say(" NO_REPLY ").await.expect("say");
         assert!(!quiet.finish().await.expect("finish"));
-        assert!(seen.0.is_empty());
+        assert_eq!(seen.0, ["note ⏰ job #3 Watch CI"]);
 
-        let mut quiet = Quiet::new(&mut seen);
-        quiet.note("⏰ job #3 Watch CI").await.expect("note");
-        assert!(!quiet.finish().await.expect("finish"));
-        assert!(seen.0.is_empty());
-
+        let mut seen = Seen::default();
         let mut quiet = Quiet::new(&mut seen);
         quiet.say("NO_REPLY").await.expect("say");
         quiet.note("⏰ removed #3 Watch CI").await.expect("note");
