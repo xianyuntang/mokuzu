@@ -12,7 +12,7 @@ use super::{
 };
 
 /// The format this build reads and writes.
-pub const VERSION: i64 = 7;
+pub const VERSION: i64 = 8;
 
 /// `MIGRATIONS[n]` turns a version `n` file into a version `n + 1` one. To change the format, add
 /// a step here and bump `VERSION`.
@@ -24,6 +24,7 @@ const MIGRATIONS: [fn(&mut DocumentMut) -> Result<()>; VERSION as usize] = [
     add_effort,
     add_threads,
     add_on_demand,
+    add_voice_provider,
 ];
 
 /// `text` upgraded to `VERSION`, comments and order kept; `None` when it is already there.
@@ -286,6 +287,14 @@ fn add_on_demand(doc: &mut DocumentMut) -> Result<()> {
     Ok(())
 }
 
+/// 7 → 8: `voice.provider` picks OpenAI or xAI; calls always went through OpenAI.
+fn add_voice_provider(doc: &mut DocumentMut) -> Result<()> {
+    if let Some(voice) = doc.get_mut("voice").and_then(Item::as_table_like_mut) {
+        fill(voice, "provider", "openai");
+    }
+    Ok(())
+}
+
 /// The table `name` in `parent`, created without a header of its own when missing.
 fn implicit_table<'a>(parent: &'a mut dyn TableLike, name: &str) -> Result<&'a mut dyn TableLike> {
     parent
@@ -330,7 +339,7 @@ mod tests {
         let new = migrate(old).expect("valid").expect("migrated");
         assert!(new.contains("# mine\n[model]"), "comment kept: {new}");
         for line in [
-            "version = 7",
+            "version = 8",
             "timezone = ",
             "provider = \"opencode-go\"",
             "api = \"openai\"",
@@ -476,6 +485,18 @@ mod tests {
         );
         let none = migrate("version = 6\n").expect("valid").expect("migrated");
         assert!(!none.contains("mcp"), "no section added: {none}");
+    }
+
+    #[test]
+    fn version_7_keeps_calls_on_openai() {
+        let old = "version = 7\n[voice]\napi_key = \"sk\"\n";
+        let new = migrate(old).expect("valid").expect("migrated");
+        assert!(
+            new.contains("api_key = \"sk\"\nprovider = \"openai\""),
+            "{new}"
+        );
+        let none = migrate("version = 7\n").expect("valid").expect("migrated");
+        assert!(!none.contains("voice"), "no section added: {none}");
     }
 
     #[test]

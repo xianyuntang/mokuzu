@@ -27,7 +27,8 @@ past a reviewer model in auto mode.
 
 - **Discord-native**: DMs, server channels, a thread per conversation, slash commands, approval
   buttons, and an allow list so it answers only you.
-- **Voice chat**: talk with it in a Discord voice channel through OpenAI's Realtime API; voice
+- **Voice chat**: talk with it in a Discord voice channel through OpenAI's Realtime API or Grok
+  Voice on a SuperGrok or X Premium subscription; voice
   messages are transcribed.
 - **Memory**: notes and skills about you, shared by every conversation, plus search over past
   conversations, in any language including Chinese and Japanese.
@@ -157,7 +158,7 @@ Rig handles device-code polling, cached access tokens, and token renewal. Copilo
 Responses for GPT-5.6, GPT-6, and Codex models and Chat Completions for others; **Advanced → API
 format** can override that choice. ChatGPT uses Responses with streaming and no server
 storage. Mokuzu continues to execute tools through its own approval and sandbox mechanisms.
-Voice still needs its separate OpenAI API key.
+Voice calls take an OpenAI API key, or the xAI sign-in below.
 
 Credentials are kept in `oauth/github-copilot/` and `oauth/chatgpt/` beside the selected config
 file, with directories readable only by the owner (`0700`) and credential files `0600`.
@@ -205,18 +206,26 @@ How it behaves:
   their text, up to 50,000 characters. A PDF's first 3 pages also go as images, and the model can
   look at any other page with `view_pdf`, so it sees the tables, figures, and scanned pages its
   text misses. With `[voice]` set, voice messages and other audio files go as their transcript,
-  made with OpenAI's `gpt-4o-mini-transcribe` in the call `language`.
+  made with OpenAI's `gpt-4o-mini-transcribe` in the call `language`, or with xAI's
+  `grok-voice-transcribe-2.0`, which detects the language itself and writes Chinese in
+  simplified script.
 - Approvals show up as **Run** and **Deny** buttons.
 
 ### Voice calls
 
-With a `[voice]` section (an OpenAI API key; set it on the **Voice** page of `mokuzu
-configure`), send `/voice` in a server while you are in one of its voice channels: mokuzu joins
-and talks with you through OpenAI's Realtime API. The realtime model keeps the conversation going
+With a `[voice]` section (set it on the **Voice** page of `mokuzu configure`), send `/voice` in a
+server while you are in one of its voice channels: mokuzu joins and talks with you through
+OpenAI's Realtime API or Grok Voice. The realtime model keeps the conversation going
 and hands anything past small talk to mokuzu's agent, which answers in the channel you sent
 `/voice` from, as text too, with approvals as buttons there; the call reads the answer out.
 `/hangup`, leaving the channel, or telling mokuzu it can go ends the call. You can talk over a
 reply to cut it short.
+
+OpenAI takes an API key and bills audio per minute. Grok Voice runs on a SuperGrok or X Premium
+subscription instead: pick **Grok Voice (xAI sign-in)** and choose **Sign in…** (or press
+**Ctrl+L**), or run `mokuzu login xai`. The sign-in is kept in `oauth/xai/` beside the config,
+like the subscription logins above, and renewed on its own. xAI decides which subscriptions may
+use it; if calls fail with 403, the subscription is not one of them.
 
 List voice channel IDs in `channels` to skip `/voice` there: mokuzu joins as soon as someone
 allowed to talk to it joins one, and the agent answers in that channel's text chat.
@@ -224,8 +233,7 @@ allowed to talk to it joins one, and the agent answers in that channel's text ch
 The bot needs the **Connect** and **Speak** permissions in that voice channel. Discord's voice
 end-to-end encryption (DAVE), which Discord requires, is new in the library mokuzu uses, and a
 join sometimes cannot hear you; mokuzu rejoins on its own when it has not heard you within 15
-seconds, until it can. If it cannot be heard, leave and join again. Audio is billed by OpenAI per
-minute of the call.
+seconds, until it can. If it cannot be heard, leave and join again.
 
 ## Running in the background
 
@@ -397,7 +405,8 @@ OS. Other platforms build from source with `cargo install`.
 
 Claude through an Anthropic API key, the models on OpenCode Go or OpenRouter, or models available to your
 GitHub Copilot or OpenAI ChatGPT subscription, chosen in `mokuzu configure`.
-Voice calls and voice message transcripts also need an OpenAI API key.
+Voice calls and voice message transcripts also need an OpenAI API key or a SuperGrok or X
+Premium sign-in.
 
 ### Does it work outside Discord?
 

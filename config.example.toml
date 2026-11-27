@@ -4,7 +4,7 @@
 # Every setting is written out; none has a hidden default. `version` is the file's format:
 # when a mokuzu update changes the format, it migrates the file on start and keeps the old one as
 # config.toml.bak.
-version = 7
+version = 8
 
 # Your IANA time zone, for the time stamped on each message and scheduled jobs.
 timezone = "Asia/Taipei"
@@ -149,15 +149,20 @@ threads = true
 # Enable the MESSAGE CONTENT intent for the bot in the Developer Portal, or it cannot connect.
 
 # Optional. Voice calls, and transcripts of voice messages and other audio you attach: send /voice in a server while you are in one of its voice
-# channels, and mokuzu joins it and talks with you through OpenAI's Realtime API. The realtime
-# model holds the conversation and hands anything past small talk to mokuzu's agent, which answers
-# in the channel you sent /voice from. /hangup ends the call.
+# channels, and mokuzu joins it and talks with you through OpenAI's Realtime API or Grok Voice. The
+# realtime model holds the conversation and hands anything past small talk to mokuzu's agent, which
+# answers in the channel you sent /voice from. /hangup ends the call.
 # [voice]
+# # "openai" with an API key, or "xai": Grok Voice on a SuperGrok or X Premium subscription,
+# # signed in with `mokuzu login xai` and api_key = "".
+# provider = "openai"
 # api_key = "sk-..."
+# # xAI: "wss://api.x.ai/v1/realtime".
 # url = "wss://api.openai.com/v1/realtime"
-# # gpt-realtime-2.1 sounds smarter at about three times the price.
+# # gpt-realtime-2.1 sounds smarter at about three times the price. xAI: "grok-voice-latest".
 # model = "gpt-realtime-2.1-mini"
 # # marin, cedar, alloy, ash, ballad, coral, echo, sage, shimmer, or verse.
+# # xAI: eve, ara, rex, sal, leo, and more.
 # voice = "marin"
 # # The language calls are held in, as you would name it to a person.
 # language = "Traditional Chinese"

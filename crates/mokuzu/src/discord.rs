@@ -83,10 +83,15 @@ enum Input {
 }
 
 /// Connects to Discord and serves DMs until the connection fails.
-pub async fn serve(config: Config) -> Result<()> {
+pub async fn serve(mut config: Config) -> Result<()> {
     let Some(discord) = config.discord.clone() else {
         bail!("`mokuzu serve` needs a [discord] section in the config");
     };
+    if let Some(voice) = &mut config.voice
+        && voice.provider == crate::config::VoiceProvider::Xai
+    {
+        voice.xai = Some(Arc::new(crate::oauth::Xai::open(&config.path)?));
+    }
     let db = Db::open(&config.database_path)?;
     // MESSAGE_CONTENT is privileged: enable it for the bot in the Developer Portal, or connecting fails.
     let mut intents = GatewayIntents::DIRECT_MESSAGES

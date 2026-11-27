@@ -13,7 +13,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, List, ListState, Padding, Paragraph, Wrap};
 
-use crate::config::{self, Api, Config, Effort, Provider};
+use crate::config::{self, Api, Config, Effort, Provider, VoiceProvider};
 use crate::oauth;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table};
 
@@ -71,6 +71,8 @@ const OPENROUTER_MODELS: &[&str] = &[
 const CUSTOM: &str = "Custom…";
 const ENABLED: &str = "Enabled";
 const DISABLED: &str = "Disabled";
+const VOICE_OPENAI: &str = "OpenAI Realtime (API key)";
+const VOICE_XAI: &str = "Grok Voice (xAI sign-in)";
 const SEARXNG: &str = "SearXNG";
 const BRAVE: &str = "Brave Search API";
 const STEPS: [&str; 6] = ["Discord", "Model", "Voice", "Web search", "MCP", "Advanced"];
@@ -187,8 +189,25 @@ enum LoginUpdate {
     Done(std::result::Result<(), String>),
 }
 
+/// What the sign-in button of the current step signs in to.
+#[derive(Clone, Copy)]
+enum SignIn {
+    Model(Provider),
+    /// xAI, for Grok Voice calls.
+    Voice,
+}
+
+impl SignIn {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Model(provider) => provider_name(provider),
+            Self::Voice => VOICE_XAI,
+        }
+    }
+}
+
 struct Login {
-    provider: Provider,
+    name: &'static str,
     updates: mpsc::Receiver<LoginUpdate>,
     task: tokio::task::JoinHandle<()>,
     prompt: Option<(String, String)>,
@@ -218,6 +237,8 @@ struct Form {
     /// `NO_COLOR` is set: draw without colors, relying on the ✓ ✗ ● ▌ marks.
     plain: bool,
     login: Option<Login>,
+    /// The voice provider whose defaults the voice URL, model, and voice fields hold.
+    voice_fill: VoiceProvider,
 }
 
 fn models(provider: Provider) -> &'static [&'static str] {
@@ -505,12 +526,15 @@ impl Form {
                 .to_string(),
         ));
         let voice = current.and_then(|c| c.voice.as_ref());
-        let voice_name = voice.map_or(config::REALTIME_VOICES[0], |v| v.voice.as_str());
+        let voice_fill = voice.map_or(VoiceProvider::Openai, |v| v.provider);
+        let voice_name = voice.map_or(voice_fill.voices()[0], |v| v.voice.as_str());
         fields.push(field(
             STEP_VOICE,
             "Voice calls",
-            Kind::Select(options(&[DISABLED, ENABLED])),
-            if voice.is_some() { ENABLED } else { DISABLED }.to_owned(),
+            Kind::Select(options(&[DISABLED, VOICE_OPENAI, VOICE_XAI])),
+            voice
+                .map_or(DISABLED, |v| voice_label(v.provider))
+                .to_owned(),
         ));
         fields.push(field(
             STEP_VOICE,
@@ -537,7 +561,7 @@ impl Form {
         fields.push(field(
             STEP_VOICE,
             "Voice",
-            Kind::Select(options_with(&config::REALTIME_VOICES, voice_name)),
+            Kind::Select(options_with(voice_fill.voices(), voice_name)),
             voice_name.to_owned(),
         ));
         fields.push(field(
@@ -545,7 +569,7 @@ impl Form {
             "Realtime model",
             Kind::Text,
             voice
-                .map_or(config::DEFAULT_REALTIME_MODEL, |v| v.model.as_str())
+                .map_or(voice_fill.default_model(), |v| v.model.as_str())
                 .to_owned(),
         ));
         fields.push(field(
@@ -553,7 +577,7 @@ impl Form {
             "Realtime URL",
             Kind::Text,
             voice
-                .map_or(config::DEFAULT_REALTIME_URL, |v| v.url.as_str())
+                .map_or(voice_fill.default_url(), |v| v.url.as_str())
                 .to_owned(),
         ));
         fields.push(field(
@@ -644,6 +668,7 @@ impl Form {
             attempted: false,
             plain: std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()),
             login: None,
+            voice_fill,
         })
     }
 
@@ -652,8 +677,10 @@ impl Form {
         field.step == self.step
             && match i {
                 CUSTOM_MODEL => self.fields[MODEL].value == CUSTOM,
-                VOICE_KEY | VOICE_MODEL | VOICE_NAME | VOICE_URL | VOICE_CHANNELS
-                | VOICE_LANGUAGE => self.fields[VOICE].value == ENABLED,
+                VOICE_KEY => self.voice_provider() == Some(VoiceProvider::Openai),
+                VOICE_MODEL | VOICE_NAME | VOICE_URL | VOICE_CHANNELS | VOICE_LANGUAGE => {
+                    self.voice_provider().is_some()
+                }
                 SEARCH_URL | SEARCH_USER | SEARCH_PASSWORD => self.fields[SEARCH].value == SEARXNG,
                 SEARCH_RESULTS => self.fields[SEARCH].value != DISABLED,
                 BRAVE_KEY => self.fields[SEARCH].value == BRAVE,
@@ -679,9 +706,18 @@ impl Form {
     fn visible(&self) -> Vec<usize> {
         (0..self.fields.len())
             .filter(|&i| self.shown(i))
-            .chain((self.step == STEP_MODEL && self.provider().uses_oauth()).then_some(LOGIN))
+            .chain(self.sign_in().map(|_| LOGIN))
             .chain([BUTTON])
             .collect()
+    }
+
+    /// What this step's sign-in button signs in to, if it has one.
+    fn sign_in(&self) -> Option<SignIn> {
+        match self.step {
+            STEP_MODEL if self.provider().uses_oauth() => Some(SignIn::Model(self.provider())),
+            STEP_VOICE if self.voice_provider() == Some(VoiceProvider::Xai) => Some(SignIn::Voice),
+            _ => None,
+        }
     }
 
     fn move_focus(&mut self, step: isize) {
@@ -745,6 +781,7 @@ impl Form {
                         if self.provider() != before {
                             self.switch_provider(before);
                         }
+                        self.switch_voice();
                         self.edited();
                     }
                     KeyCode::Esc => self.menu = None,
@@ -769,9 +806,7 @@ impl Form {
                     }
                 }
                 KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    if self.step == STEP_MODEL && self.provider().uses_oauth() {
-                        self.start_login(path);
-                    }
+                    self.start_login(path);
                 }
                 KeyCode::Enter if self.focus == LOGIN => self.start_login(path),
                 KeyCode::Enter if self.focus == BUTTON => {
@@ -805,20 +840,25 @@ impl Form {
     }
 
     fn start_login(&mut self, path: &Path) {
-        let provider = self.provider();
+        let Some(target) = self.sign_in() else {
+            return;
+        };
         let path = path.to_owned();
         let (sender, updates) = mpsc::channel();
         let task = tokio::runtime::Handle::current().spawn(async move {
             let prompts = sender.clone();
-            let result = oauth::login_with_prompt(&path, provider, move |url, code| {
+            let prompt = move |url, code| {
                 let _ = prompts.send(LoginUpdate::Prompt { url, code });
-            })
-            .await
+            };
+            let result = match target {
+                SignIn::Model(provider) => oauth::login_with_prompt(&path, provider, prompt).await,
+                SignIn::Voice => oauth::login_xai(&path, prompt).await,
+            }
             .map_err(|err| format!("{err:#}"));
             let _ = sender.send(LoginUpdate::Done(result));
         });
         self.login = Some(Login {
-            provider,
+            name: target.name(),
             updates,
             task,
             prompt: None,
@@ -837,13 +877,13 @@ impl Form {
                 match login.updates.try_recv() {
                     Ok(LoginUpdate::Prompt { url, code }) => login.prompt = Some((url, code)),
                     Ok(LoginUpdate::Done(result)) => {
-                        done = Some((login.provider, result));
+                        done = Some((login.name, result));
                         break;
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         done = Some((
-                            login.provider,
+                            login.name,
                             Err("sign-in task ended unexpectedly".to_owned()),
                         ));
                         break;
@@ -851,12 +891,11 @@ impl Form {
                 }
             }
         }
-        if let Some((provider, result)) = done {
+        if let Some((name, result)) = done {
             self.login = None;
             self.status = match result {
                 Ok(()) => Line::from(format!(
-                    "✓ Signed in to {}. Save to keep your settings.",
-                    provider_name(provider)
+                    "✓ Signed in to {name}. Save to keep your settings."
                 ))
                 .green(),
                 Err(err) => Line::from(format!("✗ {err}")).red(),
@@ -873,6 +912,31 @@ impl Form {
             OPENROUTER => Provider::Openrouter,
             _ => Provider::OpencodeGo,
         }
+    }
+
+    /// The voice provider picked, or `None` with calls off.
+    fn voice_provider(&self) -> Option<VoiceProvider> {
+        match self.fields[VOICE].value.as_str() {
+            VOICE_OPENAI => Some(VoiceProvider::Openai),
+            VOICE_XAI => Some(VoiceProvider::Xai),
+            _ => None,
+        }
+    }
+
+    /// Fills the voice URL, model, and voice with the newly picked provider's defaults, so one
+    /// provider's endpoint is never sent the other's sign-in.
+    fn switch_voice(&mut self) {
+        let Some(to) = self.voice_provider() else {
+            return;
+        };
+        if to == self.voice_fill {
+            return;
+        }
+        self.voice_fill = to;
+        self.fields[VOICE_URL].value = to.default_url().to_owned();
+        self.fields[VOICE_MODEL].value = to.default_model().to_owned();
+        self.fields[VOICE_NAME].value = to.voices()[0].to_owned();
+        self.fields[VOICE_NAME].kind = Kind::Select(options(to.voices()));
     }
 
     /// Points the model and reviewer menus at the newly picked provider, and swaps in its own
@@ -1072,15 +1136,20 @@ impl Form {
 
     /// The `[voice]` section, when calls are on.
     fn voice(&self) -> std::result::Result<Option<VoiceAnswers>, String> {
-        if self.fields[VOICE].value != ENABLED {
+        let Some(provider) = self.voice_provider() else {
             return Ok(None);
-        }
+        };
         let url = self.required(VOICE_URL)?;
         if !url.starts_with("wss://") {
             return Err("Realtime URL must start with wss://".to_owned());
         }
         Ok(Some(VoiceAnswers {
-            api_key: self.required(VOICE_KEY)?,
+            provider,
+            // xAI signs in instead.
+            api_key: match provider {
+                VoiceProvider::Openai => self.required(VOICE_KEY)?,
+                VoiceProvider::Xai => String::new(),
+            },
             url,
             model: self.required(VOICE_MODEL)?,
             voice: self.required(VOICE_NAME)?,
@@ -1419,7 +1488,7 @@ impl Form {
         frame.render_widget(Paragraph::new(self.status.clone()), status);
         let keys_text = if self.menu.is_some() {
             " ↑↓ choose  Enter select  Esc close"
-        } else if self.step == STEP_MODEL && self.provider().uses_oauth() {
+        } else if self.sign_in().is_some() {
             " ←→ step  ↑↓ field  ^L sign in  ^S save  Esc back  ^C quit"
         } else {
             " ←→ step  ↑↓ field  Enter open/next  ^R show secrets  ^S save  Esc back  ^C quit"
@@ -1441,10 +1510,7 @@ impl Form {
         }
         if let Some(login) = &self.login {
             let area = centered(frame.area(), 72, 11);
-            let mut lines = vec![
-                Line::from(provider_name(login.provider)).bold(),
-                Line::default(),
-            ];
+            let mut lines = vec![Line::from(login.name).bold(), Line::default()];
             match &login.prompt {
                 Some((url, code)) => {
                     lines.push(Line::from("Open this URL in your browser:"));
@@ -1563,12 +1629,17 @@ fn help(i: usize) -> (&'static str, &'static str) {
         }
         VOICE => {
             "Lets /voice in a server start a voice call: mokuzu joins your voice channel and \
-             talks through OpenAI's Realtime API, handing anything past small talk to the agent."
+             talks through OpenAI's Realtime API or Grok Voice, handing anything past small talk \
+             to the agent. Voice messages are transcribed by the same provider. Grok Voice uses \
+             a SuperGrok or X Premium subscription: choose Sign in… or press ^L."
         }
         VOICE_KEY => "An OpenAI API key, from platform.openai.com. ^R shows it.",
-        VOICE_MODEL => "The Realtime API model that talks.",
-        VOICE_NAME => "The voice it speaks with; marin and cedar sound the most natural.",
-        VOICE_URL => "The Realtime API's WebSocket endpoint. Change it only for a proxy.",
+        VOICE_MODEL => "The realtime model that talks.",
+        VOICE_NAME => {
+            "The voice it speaks with; OpenAI's marin and cedar sound the most natural. Grok \
+             has more than listed here; type one in the config to use it."
+        }
+        VOICE_URL => "The realtime WebSocket endpoint. Change it only for a proxy.",
         VOICE_LANGUAGE => "The language calls are held in, e.g. Traditional Chinese.",
         VOICE_CHANNELS => {
             "Comma-separated voice channel IDs mokuzu joins as soon as you do, without /voice; \
@@ -1696,6 +1767,7 @@ struct DiscordAnswers {
 
 /// The `[voice]` section.
 struct VoiceAnswers {
+    provider: VoiceProvider,
     api_key: String,
     url: String,
     model: String,
@@ -1709,6 +1781,13 @@ fn join_ids(ids: &[u64]) -> String {
         .map(u64::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn voice_label(provider: VoiceProvider) -> &'static str {
+    match provider {
+        VoiceProvider::Openai => VOICE_OPENAI,
+        VoiceProvider::Xai => VOICE_XAI,
+    }
 }
 
 /// Comma-separated Discord IDs; `what` names them in errors ("user", "channel").
@@ -1922,8 +2001,9 @@ fn render_toml(answers: &Answers) -> String {
     ));
     if let Some(voice) = &answers.voice {
         text.push_str(&format!(
-            "\n[voice]\napi_key = {}\nurl = {}\nmodel = {}\nvoice = {}\nlanguage = {}\n\
-             channels = [{}]\n",
+            "\n[voice]\nprovider = {}\napi_key = {}\nurl = {}\nmodel = {}\nvoice = {}\n\
+             language = {}\nchannels = [{}]\n",
+            quote(voice.provider.name()),
             quote(&voice.api_key),
             quote(&voice.url),
             quote(&voice.model),
@@ -2031,6 +2111,7 @@ mod tests {
                 threads: false,
             },
             voice: Some(VoiceAnswers {
+                provider: VoiceProvider::Openai,
                 api_key: "sk-voice".to_owned(),
                 url: config::DEFAULT_REALTIME_URL.to_owned(),
                 model: config::DEFAULT_REALTIME_MODEL.to_owned(),
@@ -2099,7 +2180,7 @@ mod tests {
         assert_eq!(voice.channels, [300, 301]);
         assert_eq!(voice.language, "繁體中文");
         let mut reopened = Form::new(Some(&config)).expect("form");
-        assert_eq!(reopened.value(VOICE), ENABLED);
+        assert_eq!(reopened.value(VOICE), VOICE_OPENAI);
         assert_eq!(reopened.value(VOICE_KEY), "sk-voice");
         assert_eq!(reopened.value(VOICE_CHANNELS), "300, 301");
         reopened.step = STEP_VOICE;
@@ -2112,8 +2193,25 @@ mod tests {
         reopened.fields[VOICE].value = DISABLED.to_owned();
         assert!(!reopened.visible().contains(&VOICE_MODEL));
         assert!(reopened.voice().expect("valid").is_none());
-        reopened.fields[VOICE].value = ENABLED.to_owned();
-        reopened.fields[VOICE_URL].value = config::DEFAULT_REALTIME_URL.to_owned();
+        reopened.fields[VOICE].value = VOICE_XAI.to_owned();
+        reopened.switch_voice();
+        assert!(
+            !reopened.visible().contains(&VOICE_KEY) && reopened.visible().contains(&LOGIN),
+            "Grok signs in instead of taking a key"
+        );
+        assert_eq!(
+            (reopened.value(VOICE_URL), reopened.value(VOICE_NAME)),
+            (config::XAI_REALTIME_URL.to_owned(), "eve".to_owned()),
+            "OpenAI's endpoint is never sent the xAI sign-in"
+        );
+        let grok = reopened.voice().expect("valid").expect("calls on");
+        assert_eq!(
+            (grok.provider, grok.api_key.as_str(), grok.model.as_str()),
+            (VoiceProvider::Xai, "", config::XAI_REALTIME_MODEL)
+        );
+        reopened.fields[VOICE].value = VOICE_OPENAI.to_owned();
+        reopened.switch_voice();
+        assert_eq!(reopened.value(VOICE_URL), config::DEFAULT_REALTIME_URL);
         assert_eq!(reopened.value(API), "openai");
         assert_eq!(reopened.value(COMPACT_AT), "50000");
         assert_eq!(reopened.value(EFFORT), "xhigh");
@@ -2441,7 +2539,7 @@ mod tests {
         assert!(form.visible().contains(&LOGIN));
         let (sender, updates) = mpsc::channel();
         form.login = Some(Login {
-            provider: Provider::Chatgpt,
+            name: CHATGPT,
             updates,
             task: tokio::spawn(std::future::pending()),
             prompt: None,
@@ -2478,7 +2576,7 @@ mod tests {
         let task = tokio::spawn(std::future::pending());
         let abort = task.abort_handle();
         form.login = Some(Login {
-            provider: Provider::GithubCopilot,
+            name: GITHUB_COPILOT,
             updates,
             task,
             prompt: None,

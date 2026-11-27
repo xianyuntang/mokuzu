@@ -25,12 +25,57 @@ pub const MIN_SCREEN: (u32, u32) = (640, 480);
 pub const DEFAULT_VIEWER_PORT: u16 = 22050;
 pub const DEFAULT_REALTIME_URL: &str = "wss://api.openai.com/v1/realtime";
 pub const DEFAULT_REALTIME_MODEL: &str = "gpt-realtime-2.1-mini";
+pub const XAI_REALTIME_URL: &str = "wss://api.x.ai/v1/realtime";
+pub const XAI_REALTIME_MODEL: &str = "grok-voice-latest";
 /// What a voice call speaks until set otherwise.
 pub const DEFAULT_VOICE_LANGUAGE: &str = "English";
 /// Voices the Realtime API offers; `marin` and `cedar` sound the most natural.
 pub const REALTIME_VOICES: [&str; 10] = [
     "marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse",
 ];
+/// Grok's best-known voices; it offers more (`GET /v1/tts/voices`), set by hand.
+pub const XAI_VOICES: [&str; 5] = ["eve", "ara", "rex", "sal", "leo"];
+
+/// Who holds voice calls and transcribes voice messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum VoiceProvider {
+    /// OpenAI's Realtime API, with `voice.api_key`.
+    Openai,
+    /// Grok Voice, signed in with a SuperGrok or X Premium subscription (`mokuzu login xai`).
+    Xai,
+}
+
+impl VoiceProvider {
+    /// The name `voice.provider` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Xai => "xai",
+        }
+    }
+
+    pub fn default_url(self) -> &'static str {
+        match self {
+            Self::Openai => DEFAULT_REALTIME_URL,
+            Self::Xai => XAI_REALTIME_URL,
+        }
+    }
+
+    pub fn default_model(self) -> &'static str {
+        match self {
+            Self::Openai => DEFAULT_REALTIME_MODEL,
+            Self::Xai => XAI_REALTIME_MODEL,
+        }
+    }
+
+    pub fn voices(self) -> &'static [&'static str] {
+        match self {
+            Self::Openai => &REALTIME_VOICES,
+            Self::Xai => &XAI_VOICES,
+        }
+    }
+}
 
 /// Which OpenCode Go endpoint format a model speaks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -493,27 +538,37 @@ struct LogSection {
     level: String,
 }
 
-/// `[voice]`: voice calls in Discord (`/voice`) through OpenAI's Realtime API.
+/// `[voice]`: voice calls in Discord (`/voice`) through a realtime speech API.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VoiceSection {
-    /// OpenAI API key.
+    pub provider: VoiceProvider,
+    /// OpenAI API key; empty for xAI, which uses the `mokuzu login xai` sign-in.
     pub api_key: Secret,
     /// Realtime WebSocket endpoint; `?model=` is appended.
     pub url: String,
     pub model: String,
-    /// One of `REALTIME_VOICES`, or any other the API offers.
+    /// One of the provider's `voices`, or any other the API offers.
     pub voice: String,
     /// The language calls are held in, as words the model reads ("Traditional Chinese", "日本語").
     pub language: String,
     /// Voice channels mokuzu joins on its own when someone allowed to talk to it joins them.
     pub channels: Vec<u64>,
+    /// The xAI sign-in, attached by `mokuzu serve`.
+    #[serde(skip)]
+    pub xai: Option<std::sync::Arc<crate::oauth::Xai>>,
 }
 
 impl VoiceSection {
     fn validate(&self) -> Result<()> {
-        if self.api_key.as_str().trim().is_empty() {
-            bail!("voice.api_key is empty");
+        let key = self.api_key.as_str().trim();
+        match self.provider {
+            VoiceProvider::Openai if key.is_empty() => bail!("voice.api_key is empty"),
+            VoiceProvider::Xai if !key.is_empty() => bail!(
+                "voice.api_key must be empty with provider = \"xai\", which signs in with \
+                 `mokuzu login xai`"
+            ),
+            _ => {}
         }
         if !self.url.starts_with("wss://") {
             bail!("voice.url must start with wss://");
@@ -525,6 +580,20 @@ impl VoiceSection {
             bail!("voice.model, voice.voice and voice.language must not be empty");
         }
         Ok(())
+    }
+
+    /// The bearer token for the provider's API, refreshing the xAI sign-in when due.
+    pub async fn bearer(&self) -> Result<String> {
+        match self.provider {
+            VoiceProvider::Openai => Ok(self.api_key.as_str().to_owned()),
+            VoiceProvider::Xai => {
+                self.xai
+                    .as_ref()
+                    .context("the xAI sign-in is not loaded")?
+                    .token()
+                    .await
+            }
+        }
     }
 }
 
@@ -1200,11 +1269,23 @@ mod tests {
             (voice.model.as_str(), voice.channels.as_slice()),
             ("m", &[7][..])
         );
+        assert_eq!(
+            voice.provider,
+            VoiceProvider::Openai,
+            "older files used OpenAI"
+        );
         assert!(Config::parse(&format!("{base}api_key = \"sk\"\nurl = \"https://x\"\n")).is_err());
         assert!(Config::parse(&format!("{base}api_key = \" \"\nurl = \"wss://x\"\n")).is_err());
         assert!(
             Config::parse(&format!("{base}api_key = \"sk\"\n")).is_err(),
             "url is required"
+        );
+        let xai = format!("{base}provider = \"xai\"\nurl = \"wss://api.x.ai/v1/realtime\"\n");
+        let config = Config::parse(&format!("{xai}api_key = \"\"\n")).expect("xai signs in");
+        assert_eq!(config.voice.expect("voice").provider, VoiceProvider::Xai);
+        assert!(
+            Config::parse(&format!("{xai}api_key = \"sk\"\n")).is_err(),
+            "an xAI key would be ignored"
         );
     }
 

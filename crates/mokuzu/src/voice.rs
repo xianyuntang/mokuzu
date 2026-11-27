@@ -1,10 +1,11 @@
 //! Voice calls over Discord: `/voice` joins the caller's voice channel and talks with them through
-//! OpenAI's Realtime API. The realtime model only holds the conversation; anything past small talk
-//! it hands to mokuzu's agent with `ask_mokuzu`, which runs as an ordinary turn in the text
-//! channel the call was started from (approvals included), and it reads the answer back.
+//! a realtime speech API: OpenAI's Realtime API, or Grok Voice, which speaks the same protocol.
+//! The realtime model only holds the conversation; anything past small talk it hands to mokuzu's
+//! agent with `ask_mokuzu`, which runs as an ordinary turn in the text channel the call was
+//! started from (approvals included), and it reads the answer back.
 //!
-//! Discord decodes the caller's voice to 24 kHz mono, the rate the Realtime API takes, and the
-//! model's 24 kHz replies play as one endless track that is silent between them.
+//! Discord decodes the caller's voice to 24 kHz mono, the rate both APIs take, and the model's
+//! 24 kHz replies play as one endless track that is silent between them.
 
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
@@ -25,7 +26,7 @@ use tokio::sync::{Notify, mpsc};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
 
-use crate::config::VoiceSection;
+use crate::config::{VoiceProvider, VoiceSection};
 
 /// Starts a call with the sender, in the voice channel they are in.
 pub const VOICE_COMMAND: &str = "/voice";
@@ -36,11 +37,15 @@ pub const HANGUP_COMMAND: &str = "/hangup";
 /// OpenAI's speech-to-text endpoint, for voice messages sent as attachments.
 const TRANSCRIBE_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
 const TRANSCRIBE_MODEL: &str = "gpt-4o-mini-transcribe";
-/// OpenAI rejects audio files over 25 MB.
+/// xAI's; it takes no prompt and detects the language itself, writing Chinese in simplified
+/// script, which only the agent reads.
+const XAI_TRANSCRIBE_URL: &str = "https://api.x.ai/v1/stt";
+const XAI_TRANSCRIBE_MODEL: &str = "grok-voice-transcribe-2.0";
+/// OpenAI rejects audio files over 25 MB; xAI takes up to 500 MB.
 pub const MAX_TRANSCRIBE_BYTES: u32 = 25 * 1024 * 1024;
 
-/// Transcribes the audio file `bytes`, named `name`, with the `[voice]` key; the call's
-/// `language` steers the script (e.g. Traditional over Simplified Chinese).
+/// Transcribes the audio file `bytes`, named `name`, with the `[voice]` provider; with OpenAI the
+/// call's `language` steers the script (e.g. Traditional over Simplified Chinese).
 pub async fn transcribe(
     web: &reqwest::Client,
     section: &VoiceSection,
@@ -48,18 +53,27 @@ pub async fn transcribe(
     bytes: Vec<u8>,
 ) -> Result<String> {
     let file = reqwest::multipart::Part::bytes(bytes).file_name(name.to_owned());
-    let form = reqwest::multipart::Form::new()
-        .text("model", TRANSCRIBE_MODEL)
-        .text("response_format", "json")
-        .text(
-            "prompt",
-            format!("The speaker most likely talks in {}.", section.language),
-        )
-        .part("file", file);
+    // xAI needs `file` last in the form.
+    let (url, form) = match section.provider {
+        VoiceProvider::Openai => (
+            TRANSCRIBE_URL,
+            reqwest::multipart::Form::new()
+                .text("model", TRANSCRIBE_MODEL)
+                .text("response_format", "json")
+                .text(
+                    "prompt",
+                    format!("The speaker most likely talks in {}.", section.language),
+                ),
+        ),
+        VoiceProvider::Xai => (
+            XAI_TRANSCRIBE_URL,
+            reqwest::multipart::Form::new().text("model", XAI_TRANSCRIBE_MODEL),
+        ),
+    };
     let body: Value = web
-        .post(TRANSCRIBE_URL)
-        .bearer_auth(section.api_key.as_str())
-        .multipart(form)
+        .post(url)
+        .bearer_auth(section.bearer().await?)
+        .multipart(form.part("file", file))
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -207,11 +221,11 @@ async fn talk(
     let mut request = format!("{}?model={}", config.url, config.model).into_client_request()?;
     request.headers_mut().insert(
         "Authorization",
-        format!("Bearer {}", config.api_key.as_str()).parse()?,
+        format!("Bearer {}", config.bearer().await?).parse()?,
     );
     let (socket, _) = tokio_tungstenite::connect_async(request)
         .await
-        .context("failed to connect to the Realtime API")?;
+        .context("failed to connect to the realtime API")?;
     let (mut write, mut read) = socket.split();
     write.send(text(&session(config, memory))).await?;
     tracing::info!("voice call connected");

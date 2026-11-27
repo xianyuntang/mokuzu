@@ -35,7 +35,7 @@ const USAGE: &str =
 
   serve      run the Discord bot (default)
   configure  interactive setup: Discord, model, voice, tools
-  login      device OAuth login: github-copilot or chatgpt (OpenAI)
+  login      device OAuth login: github-copilot, chatgpt (OpenAI), or xai (Grok voice)
   install    run `mokuzu serve` in the background and keep it alive (launchd or systemd)
   uninstall  remove the background service
   update     install the latest release and restart the background service
@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
     let mut command = None;
     let mut config_path = None;
     let mut login_provider = None;
+    let mut login_xai = false;
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         match arg.to_str() {
@@ -66,13 +67,22 @@ async fn main() -> Result<()> {
                 | "login"),
             ) if command.is_none() => command = Some(name.to_owned()),
             Some(name @ ("github-copilot" | "chatgpt" | "openai"))
-                if command.as_deref() == Some("login") && login_provider.is_none() =>
+                if command.as_deref() == Some("login")
+                    && login_provider.is_none()
+                    && !login_xai =>
             {
                 login_provider = Some(if name == "github-copilot" {
                     config::Provider::GithubCopilot
                 } else {
                     config::Provider::Chatgpt
                 });
+            }
+            Some("xai")
+                if command.as_deref() == Some("login")
+                    && login_provider.is_none()
+                    && !login_xai =>
+            {
+                login_xai = true;
             }
             _ => bail!("unexpected argument {arg:?}\n\n{USAGE}"),
         }
@@ -98,8 +108,16 @@ async fn main() -> Result<()> {
     )?;
 
     if command.as_deref() == Some("login") {
+        if login_xai {
+            oauth::login_xai(&config_path, |url, code| {
+                eprintln!("Open {url} and enter {code}");
+            })
+            .await?;
+            eprintln!("Signed in to xAI. Pick xAI for voice calls with `mokuzu configure`.");
+            return Ok(());
+        }
         let provider =
-            login_provider.context("login needs a provider: github-copilot or chatgpt")?;
+            login_provider.context("login needs a provider: github-copilot, chatgpt, or xai")?;
         return oauth::login(&config_path, provider).await;
     }
 

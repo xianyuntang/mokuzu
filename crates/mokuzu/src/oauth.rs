@@ -1,11 +1,14 @@
 //! Subscription providers use Rig's OAuth clients and Mokuzu-owned credential files.
 //! Only explicit CLI or TUI sign-in may start a device flow; background requests fail promptly.
+//! xAI, for Grok Voice, has no Rig client, so its device flow and refresh live here.
 
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use rig_core::client::CompletionClient;
@@ -13,6 +16,8 @@ use rig_core::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
 };
 use rig_core::providers::{chatgpt, copilot};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::config::{Api, Config, Provider};
 
@@ -164,25 +169,7 @@ fn credentials_dir(config: &Path, provider: Provider) -> Result<PathBuf> {
     if !provider.uses_oauth() {
         bail!("{} does not use OAuth", provider.section());
     }
-    let parent = config
-        .parent()
-        .context("config path has no parent directory")?;
-    let root = parent.join("oauth");
-    let dir = root.join(provider.section());
-    for path in [&root, &dir] {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(path)?;
-        let metadata = fs::symlink_metadata(path)?;
-        if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            bail!(
-                "OAuth credential directory must be a real directory: {}",
-                path.display()
-            );
-        }
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    }
+    let dir = private_dir(config, provider.section())?;
     let files: &[(&str, &[u8])] = match provider {
         Provider::GithubCopilot => &[("access-token", b""), ("api-key.json", b"{}")],
         Provider::Chatgpt => &[("auth.json", b"{}")],
@@ -196,10 +183,7 @@ fn credentials_dir(config: &Path, provider: Provider) -> Result<PathBuf> {
             .mode(0o600)
             .open(&path)
         {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(initial)?;
-            }
+            Ok(mut file) => file.write_all(initial)?,
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
                 let metadata = fs::symlink_metadata(&path)?;
                 if !metadata.is_file() || metadata.file_type().is_symlink() {
@@ -214,6 +198,251 @@ fn credentials_dir(config: &Path, provider: Provider) -> Result<PathBuf> {
         }
     }
     Ok(fs::canonicalize(dir)?)
+}
+
+/// `oauth/<section>` beside the config, created owner-only.
+fn private_dir(config: &Path, section: &str) -> Result<PathBuf> {
+    let parent = config
+        .parent()
+        .context("config path has no parent directory")?;
+    let root = parent.join("oauth");
+    let dir = root.join(section);
+    for path in [&root, &dir] {
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)?;
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!(
+                "OAuth credential directory must be a real directory: {}",
+                path.display()
+            );
+        }
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
+// xAI's shared CLI OAuth client, the one Grok's own tools sign in with; its consent screen may
+// say Grok Build. The scopes let a SuperGrok or X Premium sign-in call api.x.ai.
+const XAI_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+const XAI_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
+const XAI_DISCOVERY: &str = "https://auth.x.ai/.well-known/openid-configuration";
+const XAI_DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// Renew this long before the access token runs out, so a call never starts on a dying one.
+const XAI_RENEW_EARLY_SECS: i64 = 300;
+
+/// What `auth.json` holds for xAI.
+#[derive(Serialize, Deserialize)]
+struct XaiTokens {
+    access_token: String,
+    /// xAI rotates it on every renewal, so the new one must be saved before the old is lost.
+    refresh_token: String,
+    /// Unix seconds.
+    expires_at: i64,
+    token_endpoint: String,
+}
+
+impl XaiTokens {
+    /// From a token endpoint answer; a renewal may leave out the refresh token to keep `refresh`.
+    fn from_answer(body: &Value, refresh: Option<&str>, token_endpoint: &str) -> Result<Self> {
+        Ok(Self {
+            access_token: body["access_token"]
+                .as_str()
+                .context("xAI sign-in returned no access token")?
+                .to_owned(),
+            refresh_token: body["refresh_token"]
+                .as_str()
+                .or(refresh)
+                .context("xAI sign-in returned no refresh token")?
+                .to_owned(),
+            expires_at: chrono::Utc::now().timestamp()
+                + body["expires_in"]
+                    .as_i64()
+                    .context("xAI sign-in returned no token lifetime")?,
+            token_endpoint: token_endpoint.to_owned(),
+        })
+    }
+
+    /// Replaces `path` whole, so a crash mid-write never loses the rotated refresh token.
+    fn save(&self, path: &Path) -> Result<()> {
+        let temp = path.with_extension("json.tmp");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(&serde_json::to_vec(self)?)?;
+        file.sync_all()?;
+        fs::rename(&temp, path)?;
+        Ok(())
+    }
+}
+
+/// The xAI sign-in `mokuzu login xai` saved, renewed in place; one process holds it at a time.
+pub struct Xai {
+    path: PathBuf,
+    web: reqwest::Client,
+    tokens: tokio::sync::Mutex<XaiTokens>,
+    _lease: fs::File,
+}
+
+impl std::fmt::Debug for Xai {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Xai(<redacted>)")
+    }
+}
+
+impl Xai {
+    /// Loads the sign-in saved beside `config`.
+    pub fn open(config: &Path) -> Result<Self> {
+        let dir = private_dir(config, "xai")?;
+        let lease = lease(&dir)?;
+        let path = dir.join("auth.json");
+        let tokens = fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .context("voice.provider = \"xai\" needs a sign-in: run `mokuzu login xai`")?;
+        Ok(Self {
+            path,
+            web: xai_web()?,
+            tokens: tokio::sync::Mutex::new(tokens),
+            _lease: lease,
+        })
+    }
+
+    /// A current access token, renewed first when it is about to run out.
+    pub async fn token(&self) -> Result<String> {
+        let mut tokens = self.tokens.lock().await;
+        if tokens.expires_at - XAI_RENEW_EARLY_SECS > chrono::Utc::now().timestamp() {
+            return Ok(tokens.access_token.clone());
+        }
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("client_id", XAI_CLIENT_ID),
+            ("refresh_token", tokens.refresh_token.as_str()),
+        ];
+        let (ok, body) = xai_post(&self.web, &tokens.token_endpoint, &form).await?;
+        if !ok {
+            bail!(
+                "xAI sign-in could not be renewed ({}); run `mokuzu login xai`",
+                xai_error(&body)
+            );
+        }
+        let fresh =
+            XaiTokens::from_answer(&body, Some(&tokens.refresh_token), &tokens.token_endpoint)?;
+        fresh.save(&self.path)?;
+        *tokens = fresh;
+        Ok(tokens.access_token.clone())
+    }
+}
+
+fn xai_web() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .user_agent(concat!("mokuzu/", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .context("failed to build the xAI sign-in client")
+}
+
+/// Posts `form` to an xAI OAuth endpoint; whether it succeeded, and the JSON answer.
+async fn xai_post(
+    web: &reqwest::Client,
+    url: &str,
+    form: &[(&str, &str)],
+) -> Result<(bool, Value)> {
+    let response = web
+        .post(url)
+        .header("Accept", "application/json")
+        .form(form)
+        .send()
+        .await
+        .context("xAI sign-in request failed")?;
+    let ok = response.status().is_success();
+    let body = response
+        .json()
+        .await
+        .context("xAI sign-in answer unreadable")?;
+    Ok((ok, body))
+}
+
+fn xai_error(body: &Value) -> &str {
+    body["error_description"]
+        .as_str()
+        .or(body["error"].as_str())
+        .unwrap_or("unknown error")
+}
+
+/// Endpoint `key` from xAI's discovery document, only if it is on x.ai over HTTPS.
+fn xai_endpoint(discovery: &Value, key: &str) -> Result<String> {
+    let url = discovery[key]
+        .as_str()
+        .with_context(|| format!("xAI sign-in discovery has no {key}"))?;
+    let parsed = reqwest::Url::parse(url)?;
+    let host = parsed.host_str().unwrap_or_default();
+    if parsed.scheme() != "https" || !(host == "x.ai" || host.ends_with(".x.ai")) {
+        bail!("xAI sign-in discovery points {key} outside x.ai: {url}");
+    }
+    Ok(url.to_owned())
+}
+
+/// Signs in to xAI with a device code, saving the tokens beside `config`. `on_prompt` gets the
+/// URL to open and the code to enter there.
+pub async fn login_xai(
+    config: &Path,
+    on_prompt: impl Fn(String, String) + Send + Sync + 'static,
+) -> Result<()> {
+    let dir = private_dir(config, "xai")?;
+    let _lease = lease(&dir)?;
+    let web = xai_web()?;
+    let discovery: Value = web
+        .get(XAI_DISCOVERY)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .context("xAI sign-in discovery failed")?
+        .json()
+        .await
+        .context("xAI sign-in discovery unreadable")?;
+    let device_endpoint = xai_endpoint(&discovery, "device_authorization_endpoint")?;
+    let token_endpoint = xai_endpoint(&discovery, "token_endpoint")?;
+    let form = [("client_id", XAI_CLIENT_ID), ("scope", XAI_SCOPE)];
+    let (ok, device) = xai_post(&web, &device_endpoint, &form).await?;
+    if !ok {
+        bail!("xAI refused the sign-in: {}", xai_error(&device));
+    }
+    let field = |key: &str| {
+        device[key]
+            .as_str()
+            .with_context(|| format!("xAI sign-in returned no {key}"))
+    };
+    let device_code = field("device_code")?;
+    let url = field("verification_uri_complete").or_else(|_| field("verification_uri"))?;
+    on_prompt(url.to_owned(), field("user_code")?.to_owned());
+    let mut interval = Duration::from_secs(device["interval"].as_u64().unwrap_or(5));
+    let deadline =
+        Instant::now() + Duration::from_secs(device["expires_in"].as_u64().unwrap_or(1800));
+    while Instant::now() < deadline {
+        tokio::time::sleep(interval).await;
+        let form = [
+            ("grant_type", XAI_DEVICE_GRANT),
+            ("client_id", XAI_CLIENT_ID),
+            ("device_code", device_code),
+        ];
+        let (ok, body) = xai_post(&web, &token_endpoint, &form).await?;
+        if ok {
+            return XaiTokens::from_answer(&body, None, &token_endpoint)?
+                .save(&dir.join("auth.json"));
+        }
+        match body["error"].as_str() {
+            Some("authorization_pending") => {}
+            Some("slow_down") => interval += Duration::from_secs(5),
+            _ => bail!("xAI sign-in failed: {}", xai_error(&body)),
+        }
+    }
+    bail!("the xAI sign-in code expired; try again")
 }
 
 pub async fn login(config: &Path, provider: Provider) -> Result<()> {
@@ -310,6 +539,60 @@ pub(crate) mod tests {
         assert!(lease(&dir).is_err());
         drop(guard);
         assert!(lease(&dir).is_ok());
+        fs::remove_dir_all(config.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn xai_renews_a_dying_token_and_keeps_the_rotated_refresh_token() {
+        let config = config_path();
+        let missing = Xai::open(&config).unwrap_err();
+        assert!(format!("{missing:#}").contains("mokuzu login xai"));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/token", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !String::from_utf8_lossy(&request).contains("refresh_token=old-refresh") {
+                let mut chunk = [0; 4096];
+                let read = stream.read(&mut chunk).await.unwrap();
+                assert!(read > 0, "renewal must send the saved refresh token");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let body = json!({"access_token": "new-access", "refresh_token": "new-refresh",
+                "expires_in": 21600})
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let path = private_dir(&config, "xai").unwrap().join("auth.json");
+        XaiTokens {
+            access_token: "old-access".to_owned(),
+            refresh_token: "old-refresh".to_owned(),
+            expires_at: chrono::Utc::now().timestamp() + 60,
+            token_endpoint: endpoint,
+        }
+        .save(&path)
+        .unwrap();
+        let xai = Xai::open(&config).unwrap();
+        assert!(Xai::open(&config).is_err(), "one process renews at a time");
+        assert_eq!(xai.token().await.unwrap(), "new-access");
+        server.await.unwrap();
+        assert_eq!(
+            xai.token().await.unwrap(),
+            "new-access",
+            "fresh tokens are reused"
+        );
+        let saved: XaiTokens = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.refresh_token, "new-refresh");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         fs::remove_dir_all(config.parent().unwrap()).unwrap();
     }
 
