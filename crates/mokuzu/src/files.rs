@@ -375,7 +375,10 @@ mod tests {
         let fetcher = crate::fetch::Fetcher::new().expect("client");
         let args = json!({ "path": dir.join("chart.png"), "url": "" });
         let (name, bytes) = load(&config, &fetcher, &args).await.expect("loads");
-        assert_eq!((name.as_str(), bytes.as_slice()), ("chart.png", b"png".as_slice()));
+        assert_eq!(
+            (name.as_str(), bytes.as_slice()),
+            ("chart.png", b"png".as_slice())
+        );
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
 
